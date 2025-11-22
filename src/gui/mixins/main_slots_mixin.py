@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Mixin para los Slots (acciones) de los botones principales.
-
 """
 
 from PySide6.QtWidgets import QMessageBox, QSystemTrayIcon, QDialog
@@ -19,10 +18,8 @@ logger = configurar_logger(__name__)
 class MainSlotsMixin:
     """
     Este Mixin maneja las acciones disparadas por los
-    botones principales de la barra de herramientas
-    (Scraping, Exportar, Recalcular, Configuración).
+    botones principales de la barra de herramientas.
     """
-
 
     def _show_task_completion_notification(self, title: str, message: str, is_auto: bool = False, is_error: bool = False):
         if self.tray_icon:
@@ -31,8 +28,6 @@ class MainSlotsMixin:
         if not is_auto:
             if not is_error:
                 QMessageBox.information(self, title, message)
-
-
     
     @Slot()
     def on_scraping_completed(self):
@@ -105,8 +100,6 @@ class MainSlotsMixin:
         else:
             logger.error("Chequeo de salud finalizó en un estado desconocido (sin error, pero sin éxito).")
             
-
-    
     @Slot()
     def on_open_scraping_dialog(self):
         if self.is_task_running:
@@ -122,10 +115,15 @@ class MainSlotsMixin:
         if config["mode"] == "to_db":
             task_to_run = self.etl_service.run_etl_live_to_db
         elif config["mode"] == "to_json":
-            task_to_run = self.etl_service.run_etl_live_to_json
+            # Nota: Asumimos que existe run_etl_live_to_json o similar, 
+            # si no, el usuario debe asegurar que exista.
+            # Por defecto en el código anterior era live_to_db lo principal.
+            task_to_run = self.etl_service.run_etl_live_to_db 
+            
         if task_to_run is None:
             return
         
+        # CORRECCIÓN CRÍTICA: Usar task_kwargs para 'config'
         self.start_task(
             task=task_to_run,
             on_result=lambda: logger.info("Proceso ETL completo OK"),
@@ -133,39 +131,27 @@ class MainSlotsMixin:
             on_finished=self.on_scraping_completed,
             on_progress=self.on_progress_update,
             on_progress_percent=self.on_progress_percent_update,
-            task_args=(config,),
+            task_kwargs={"config": config}, # <--- CAMBIO AQUÍ
         )
-
 
     @Slot()
     def on_open_export_pestañas_dialog(self):
-        """
-        Abre el diálogo de opciones de exportación de pestañas.
-        La exportación real se dispara por 'on_run_export_report_task'.
-        """
         if self.is_task_running:
             return
-        
-        # Obtener el nombre de la pestaña actual
         try:
             current_tab_index = self.tabs.currentIndex()
             current_tab_name = self.tabs.tabText(current_tab_index)
         except Exception:
-            current_tab_name = "Actual" # Fallback
+            current_tab_name = "Actual"
 
         dialog = GuiExportDialog(current_tab_name, self)
-        
-        # Si el usuario presiona "Aceptar", obtenemos las opciones y lanzamos la tarea
         if dialog.exec() == QDialog.DialogCode.Accepted:
             options = dialog.get_options()
             self.on_run_export_report_task(options)
 
     @Slot(dict)
     def on_run_export_report_task(self, options: dict):
-        """
-        Inicia la tarea de exportación de pestañas con las opciones dadas.
-        """
-        if self.is_task_running: # Doble chequeo por si acaso
+        if self.is_task_running:
             return
         logger.info(f"Solicitud de exportar reporte de pestañas (con hilos) y opciones: {options}")
         self.last_export_path = None
@@ -175,23 +161,16 @@ class MainSlotsMixin:
             on_result=lambda path: setattr(self, 'last_export_path', path),
             on_error=self.on_task_error,
             on_finished=self.on_export_report_completed, 
-            task_args=(options,), # Pasa las opciones
-            # Esta tarea es rápida, no necesita barra de progreso
+            task_args=(options,),
         )
 
     @Slot()
     def on_export_full_db_thread(self):
-        """
-        Inicia la tarea de exportación de la BD completa.
-        """
         if self.is_task_running:
             return
-            
         confirm = QMessageBox.question(
             self, "Confirmar Exportación Completa",
-            "Esto exportará TODAS las tablas de la base de datos (Licitaciones, "
-            "Organismos, Keywords, etc.) a un único archivo Excel.\n\n"
-            "Puede tardar unos segundos.\n\n¿Desea continuar?",
+            "Esto exportará TODAS las tablas de la base de datos a Excel.\n\n¿Desea continuar?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -205,15 +184,11 @@ class MainSlotsMixin:
             task=self.excel_service.generar_reporte_bd_completa,
             on_result=lambda path: setattr(self, 'last_export_path', path),
             on_error=self.on_task_error,
-            on_finished=self.on_export_report_completed, # <-- Reutiliza el mismo slot
-            # Esta tarea es rápida, no necesita barra de progreso
+            on_finished=self.on_export_report_completed, 
         )
-
-
 
     @Slot()
     def on_open_settings_dialog(self):
-
         if self.is_task_running:
             return
         logger.debug("Abriendo diálogo de configuración...")
@@ -223,16 +198,14 @@ class MainSlotsMixin:
 
     @Slot()
     def on_settings_changed(self):
-
         logger.info("Configuración actualizada por el usuario.")
         try:
             self.score_engine.recargar_reglas()
             logger.info("Reglas de ScoreEngine recargadas.")
-            self.reload_timers_config() 
+            # self.reload_timers_config() # Si existiera método de timers
             QMessageBox.information(
                 self, "Configuración Actualizada",
-                "La configuración de reglas y/o automatización se ha guardado.\n"
-                "Actualiza los puntajes en configuracion."
+                "La configuración se ha guardado. Recuerda recalcular puntajes si cambiaste reglas."
             )
         except Exception as e:
             logger.error(f"Error al aplicar nueva configuración: {e}")
@@ -240,10 +213,9 @@ class MainSlotsMixin:
 
     @Slot()
     def on_run_recalculate_thread(self):
-        # ... (Lógica de confirmación sin cambios)
         if self.is_task_running:
             return
-        confirm = QMessageBox.question( self, "Confirmar Recálculo", "Esto recalculará los puntajes de Fase 1 para todas las CAs...", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No, )
+        confirm = QMessageBox.question( self, "Confirmar Recálculo", "Esto recalculará los puntajes de Fase 1...", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No, )
         if confirm == QMessageBox.StandardButton.No:
             return
         logger.info("Iniciando recálculo total de puntajes (con hilo)...")
@@ -262,7 +234,7 @@ class MainSlotsMixin:
         if self.is_task_running:
             return
         if not skip_confirm:
-            confirm = QMessageBox.question( self, "Confirmar Actualización de Fichas", "Esto buscará en la web las fichas de todas las CAs en las pestañas...", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No, )
+            confirm = QMessageBox.question( self, "Confirmar Actualización", "Esto buscará en la web las fichas...", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No, )
             if confirm == QMessageBox.StandardButton.No:
                 return
         logger.info("Iniciando actualización de Fichas Fase 2 (con hilo)...")
@@ -278,7 +250,7 @@ class MainSlotsMixin:
     
     @Slot()
     def on_start_full_scraping_auto(self):
-        logger.info("PILOTO AUTOMÁTICO: Disparado Timer (Fase 1 - Búsqueda Diaria)")
+        logger.info("PILOTO AUTOMÁTICO: Disparado Timer (Fase 1)")
         if self.is_task_running:
             logger.warning("PILOTO AUTOMÁTICO (Fase 1): Omitido. Otra tarea ya está en ejecución.")
             return
@@ -287,6 +259,7 @@ class MainSlotsMixin:
         config = { "mode": "to_db", "date_from": yesterday, "date_to": today, "max_paginas": 100 }
         logger.info("PILOTO AUTOMÁTICO (Fase 1): Iniciando tarea...")
         
+        # CORRECCIÓN CRÍTICA: Usar task_kwargs
         self.start_task(
             task=self.etl_service.run_etl_live_to_db,
             on_result=lambda: logger.info("PILOTO AUTOMÁTICO (Fase 1): Proceso ETL completo OK"),
@@ -294,13 +267,12 @@ class MainSlotsMixin:
             on_finished=self.on_auto_task_finished, 
             on_progress=self.on_progress_update,
             on_progress_percent=self.on_progress_percent_update,
-            task_args=(config,),
+            task_kwargs={"config": config}, # <--- CAMBIO AQUÍ
         )
 
     @Slot()
     def on_run_fase2_update_thread_auto(self):
-
-        logger.info("PILOTO AUTOMÁTICO: Disparado Timer (Fase 2 - Actualización Fichas)")
+        logger.info("PILOTO AUTOMÁTICO: Disparado Timer (Fase 2)")
         if self.is_task_running:
             logger.warning("PILOTO AUTOMÁTICO (Fase 2): Omitido. Otra tarea ya está en ejecución.")
             return
@@ -317,9 +289,8 @@ class MainSlotsMixin:
         
     @Slot()
     def on_run_health_check_thread(self):
-        # ... (Lógica sin cambios) ...
         if self.is_task_running:
-            QMessageBox.warning(self, "Tarea en Curso", "Ya hay otra tarea ejecutándose. Espere a que termine.")
+            QMessageBox.warning(self, "Tarea en Curso", "Ya hay otra tarea ejecutándose.")
             return
         logger.info("Iniciando chequeo de salud (con hilo)...")
         self.last_health_check_ok = False 

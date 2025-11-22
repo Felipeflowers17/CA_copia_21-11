@@ -1,74 +1,85 @@
 # -*- coding: utf-8 -*-
-"""
-Punto de Entrada Principal de la Aplicación (Producción).
-"""
-
 import sys
 import os
 from pathlib import Path
 
-# --- Configuración del Path ---
+# Configuración del Path para PyInstaller
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).resolve().parent
+    ROOT_DIR = Path(sys._MEIPASS)
 else:
-    BASE_DIR = Path(__file__).resolve().parent
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    ROOT_DIR = Path(__file__).resolve().parent
 
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
-# Importar logger y configuración
+from PySide6.QtWidgets import QApplication, QSplashScreen
+from PySide6.QtCore import Qt, QCoreApplication
+from PySide6.QtGui import QPixmap, QFont
+
 from src.utils.logger import configurar_logger
 from config.config import DATABASE_URL
 
-# Importaciones para Alembic
 from alembic.config import Config
 from alembic.command import upgrade
 
 logger = configurar_logger("run_app")
 
 def run_migrations():
-    """Ejecuta las migraciones de Alembic antes de iniciar la GUI."""
     logger.info("Verificando estado de la base de datos...")
     try:
-        # Rutas para el ejecutable congelado vs código fuente
         if getattr(sys, 'frozen', False):
-            base_path = Path(sys._MEIPASS) # Ruta temporal de PyInstaller
-            alembic_cfg_path = base_path / "alembic.ini"
-            script_location = base_path / "alembic"
+            alembic_cfg_path = ROOT_DIR / "alembic.ini"
+            script_location = ROOT_DIR / "alembic"
         else:
-            alembic_cfg_path = BASE_DIR / "alembic.ini"
-            script_location = BASE_DIR / "alembic"
+            alembic_cfg_path = ROOT_DIR / "alembic.ini"
+            script_location = ROOT_DIR / "alembic"
 
         if not alembic_cfg_path.exists():
             logger.error(f"No se encontró alembic.ini en: {alembic_cfg_path}")
             return
 
-        logger.info(f"Ejecutando migraciones usando config: {alembic_cfg_path}")
-        
         alembic_cfg = Config(str(alembic_cfg_path))
         alembic_cfg.set_main_option("script_location", str(script_location))
         alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
 
-        # Ejecutar upgrade head (silencioso si no hay cambios)
         upgrade(alembic_cfg, "head")
         logger.info("BD actualizada correctamente.")
 
     except Exception as e:
-        # Si falla la migración, lo logueamos pero intentamos abrir la app igual
-        # para no bloquear al usuario por errores menores de DB.
         logger.critical(f"Error al ejecutar migraciones: {e}", exc_info=True)
 
 def main():
+    # Crear la app primero para poder mostrar Splash
+    app = QApplication(sys.argv)
+    font = QFont("Segoe UI", 10)
+    app.setFont(font)
+    app.setQuitOnLastWindowClosed(False)
+
+    # Splash Screen Simple (Solo texto si no hay imagen)
+    splash = QSplashScreen()
+    splash.showMessage("Iniciando Monitor CA...\nVerificando Base de Datos...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
+    splash.show()
+    
+    # Procesar eventos para que se pinte el splash antes de bloquear con migraciones
+    QCoreApplication.processEvents()
+
     # 1. Ejecutar Migraciones
     run_migrations()
+    
+    splash.showMessage("Cargando Interfaz...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
+    QCoreApplication.processEvents()
 
     # 2. Iniciar GUI
     try:
-        from src.gui.gui_main import run_gui
-        run_gui()
+        from src.gui.gui_main import MainWindow
+        window = MainWindow()
+        window.show()
+        splash.finish(window)
+        sys.exit(app.exec())
     except Exception as e:
         logger.critical(f"Error fatal no manejado en la GUI: {e}", exc_info=True)
-        # En producción, si falla fatalmente, mostramos el error rápido antes de salir
         print(f"Error Fatal: {e}")
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Panel de Herramientas.
 Actualizado: 
 1. Fix Ordenamiento: 'N/A' ahora se ordena correctamente al final.
 2. Fix Visual: Diálogo de edición de puntos modernizado (Fluent Design).
+3. Modificación: Se eliminó opción de actualización automática en Piloto Automático.
 """
 
 from PySide6.QtCore import Qt, Signal, QDate, QTime
@@ -224,25 +225,26 @@ class GuiToolsWidget(QWidget):
 
     def _create_advanced_page(self):
         w = QWidget(); l = QVBoxLayout(w); l.addWidget(SubtitleLabel("Piloto Automático", w))
+        
+        # --- SOLO EXTRAER (Ayer) ---
         g1 = QGroupBox("Extracción Automática (Ayer)"); v1 = QVBoxLayout(); h1 = QHBoxLayout()
         self.chkAutoExtract = CheckBox("Habilitar", w); self.timeExtract = TimePicker(w, showSeconds=False) 
         h1.addWidget(self.chkAutoExtract); h1.addStretch(); h1.addWidget(BodyLabel("Hora de ejecución:", w)); h1.addWidget(self.timeExtract); v1.addLayout(h1); g1.setLayout(v1); l.addWidget(g1)
-        g2 = QGroupBox("Actualización de Pestañas"); v2 = QVBoxLayout(); h2 = QHBoxLayout()
-        self.chkAutoUpdate = CheckBox("Habilitar", w); self.timeUpdate = TimePicker(w, showSeconds=False) 
-        h2.addWidget(self.chkAutoUpdate); h2.addStretch(); h2.addWidget(BodyLabel("Hora de ejecución:", w)); h2.addWidget(self.timeUpdate); v2.addLayout(h2); g2.setLayout(v2); l.addWidget(g2)
+        
+        # (Se eliminó g2 Actualización)
+
         l.addSpacing(20); hBtn = QHBoxLayout(); b = PrimaryPushButton("Guardar Configuración", w); b.setFixedWidth(250); b.clicked.connect(self._save_advanced); hBtn.addStretch(); hBtn.addWidget(b); hBtn.addStretch(); l.addLayout(hBtn); l.addStretch()
         self._load_advanced_settings(); return w
+
     def _load_advanced_settings(self):
         self.chkAutoExtract.setChecked(bool(self.settings_manager.get_setting("auto_extract_enabled")))
-        self.chkAutoUpdate.setChecked(bool(self.settings_manager.get_setting("auto_update_enabled")))
         self.timeExtract.setTime(QTime.fromString(self.settings_manager.get_setting("auto_extract_time") or "08:00", "HH:mm"))
-        self.timeUpdate.setTime(QTime.fromString(self.settings_manager.get_setting("auto_update_time") or "09:00", "HH:mm"))
+        
     def _save_advanced(self):
         self.settings_manager.set_setting("auto_extract_enabled", self.chkAutoExtract.isChecked())
-        self.settings_manager.set_setting("auto_update_enabled", self.chkAutoUpdate.isChecked())
         t_ext = self.timeExtract.time.toString("HH:mm") if hasattr(self.timeExtract, "time") else self.timeExtract.getTime().toString("HH:mm")
-        t_upd = self.timeUpdate.time.toString("HH:mm") if hasattr(self.timeUpdate, "time") else self.timeUpdate.getTime().toString("HH:mm")
-        self.settings_manager.set_setting("auto_extract_time", t_ext); self.settings_manager.set_setting("auto_update_time", t_upd)
+        self.settings_manager.set_setting("auto_extract_time", t_ext)
+        
         self.settings_manager.save_settings(self.settings_manager.config); self.autopilot_config_changed_signal.emit()
         InfoBar.success(title="Guardado", content="Configuración avanzada guardada correctamente.", orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self.window())
 

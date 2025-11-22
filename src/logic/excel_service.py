@@ -19,7 +19,6 @@ from src.utils.logger import configurar_logger
 
 logger = configurar_logger(__name__)
 
-# BASE_DIR se mantiene para referencia interna, pero EXPORTS_DIR ya no se usa para exportaciones de usuario
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
@@ -68,27 +67,31 @@ class ExcelService:
         
         return resultados
 
-    def _convertir_a_dataframe(self, licitaciones: list[CaLicitacion]) -> pd.DataFrame:
+    def _convertir_a_dataframe(self, datos_dict: List[Dict]) -> pd.DataFrame:
         datos = []
-        for ca in licitaciones:
-            fecha_cierre_ingenua = ca.fecha_cierre.replace(tzinfo=None) if ca.fecha_cierre else None
-            fecha_cierre_2_ingenua = ca.fecha_cierre_segundo_llamado.replace(tzinfo=None) if ca.fecha_cierre_segundo_llamado else None
+        for item in datos_dict:
+            # Manejo seguro de fechas y zonas horarias
+            f_cierre = item.get("fecha_cierre")
+            f_cierre_2 = item.get("fecha_cierre_segundo_llamado")
+            
+            fecha_cierre_ingenua = f_cierre.replace(tzinfo=None) if f_cierre else None
+            fecha_cierre_2_ingenua = f_cierre_2.replace(tzinfo=None) if f_cierre_2 else None
 
             datos.append({
-                "Score": ca.puntuacion_final,
-                "Código CA": ca.codigo_ca,
-                "Nombre": ca.nombre,
-                "Descripcion": ca.descripcion,
-                "Organismo": ca.organismo.nombre if ca.organismo else "N/A",
-                "Dirección Entrega": ca.direccion_entrega,
-                "Estado": ca.estado_ca_texto,
-                "Fecha Publicación": ca.fecha_publicacion,
+                "Score": item.get("puntuacion_final"),
+                "Código CA": item.get("codigo_ca"),
+                "Nombre": item.get("nombre"),
+                "Descripcion": item.get("descripcion"),
+                "Organismo": item.get("organismo_nombre"),
+                "Dirección Entrega": item.get("direccion_entrega"),
+                "Estado": item.get("estado_ca_texto"),
+                "Fecha Publicación": item.get("fecha_publicacion"),
                 "Fecha Cierre": fecha_cierre_ingenua,
                 "Fecha Cierre 2do Llamado": fecha_cierre_2_ingenua,
-                "Proveedores": ca.proveedores_cotizando,
-                "Productos": str(ca.productos_solicitados) if ca.productos_solicitados else None,
-                "Favorito": ca.seguimiento.es_favorito if ca.seguimiento else False,
-                "Ofertada": ca.seguimiento.es_ofertada if ca.seguimiento else False,
+                "Proveedores": item.get("proveedores_cotizando"),
+                "Productos": str(item.get("productos_solicitados")) if item.get("productos_solicitados") else None,
+                "Favorito": item.get("es_favorito"),
+                "Ofertada": item.get("es_ofertada"),
             })
         
         columnas = [
@@ -106,9 +109,10 @@ class ExcelService:
         dfs_to_export: Dict[str, pd.DataFrame] = {}
 
         try:
-            datos_tab1 = self.db_service.obtener_candidatas_unificadas()
-            datos_tab3 = self.db_service.obtener_datos_tab3_seguimiento()
-            datos_tab4 = self.db_service.obtener_datos_tab4_ofertadas()
+            # Usamos los métodos seguros de DbService que devuelven diccionarios
+            datos_tab1 = self.db_service.obtener_datos_exportacion_tab1()
+            datos_tab3 = self.db_service.obtener_datos_exportacion_tab3()
+            datos_tab4 = self.db_service.obtener_datos_exportacion_tab4()
             
             dfs_to_export["Candidatas"] = self._convertir_a_dataframe(datos_tab1)
             dfs_to_export["Seguimiento"] = self._convertir_a_dataframe(datos_tab3)
@@ -123,16 +127,27 @@ class ExcelService:
         logger.info("Exportando Configuración...")
         dfs_to_export = {}
         with SessionLocal() as session:
+            # 1. Exportar Keywords (Corregido: Adaptado a la nueva estructura sin 'tipo')
             keywords = session.query(CaKeyword).all()
-            data_kw = [{"Keyword": k.keyword, "Tipo": k.tipo, "Puntos": k.puntos} for k in keywords]
+            data_kw = []
+            for k in keywords:
+                data_kw.append({
+                    "Keyword": k.keyword,
+                    "Puntos Nombre": k.puntos_nombre,
+                    "Puntos Descripcion": k.puntos_descripcion,
+                    "Puntos Productos": k.puntos_productos
+                })
             dfs_to_export["Keywords"] = pd.DataFrame(data_kw)
             
+            # 2. Exportar Reglas de Organismos
             reglas = session.query(CaOrganismoRegla).all()
             data_org = []
             for r in reglas:
+                # Manejo seguro del Enum 'tipo'
+                tipo_val = r.tipo.value if hasattr(r.tipo, 'value') else r.tipo
                 data_org.append({
-                    "Organismo": r.organismo.nombre,
-                    "Tipo Regla": r.tipo.value,
+                    "Organismo": r.organismo.nombre if r.organismo else "Desconocido",
+                    "Tipo Regla": tipo_val,
                     "Puntos": r.puntos
                 })
             dfs_to_export["Reglas_Organismos"] = pd.DataFrame(data_org)
@@ -141,15 +156,17 @@ class ExcelService:
 
     def generar_reporte_bd_completa(self, formato: str, target_dir: Path) -> str:
         dfs_to_export = {}
+        # Lista de modelos a exportar
         tablas = [CaLicitacion, CaSeguimiento, CaOrganismo, CaSector, CaKeyword, CaOrganismoRegla]
         
         try:
             with SessionLocal() as session:
                 connection = session.connection()
                 for model in tablas:
+                    # Pandas lee SQL directamente
                     df = pd.read_sql_table(model.__tablename__, con=connection)
                     
-                    # Limpieza Zonas Horarias
+                    # Limpieza de Zonas Horarias para Excel
                     for col in df.columns:
                         if pd.api.types.is_datetime64_any_dtype(df[col]):
                             try:
@@ -172,6 +189,7 @@ class ExcelService:
             try:
                 with pd.ExcelWriter(ruta, engine="openpyxl") as writer:
                     for sheet, df in dfs.items():
+                        # Excel limita nombres de hoja a 31 caracteres
                         safe_sheet = sheet[:30]
                         df.to_excel(writer, sheet_name=safe_sheet, index=False)
                 return str(ruta)
@@ -179,13 +197,13 @@ class ExcelService:
                 logger.error(f"Error escribiendo Excel {prefijo}: {e}")
                 raise e
         else:
-            # CSV: Los guardamos directamente en la carpeta target_dir con el prefijo
+            # CSV: Guardamos múltiples archivos
             try:
                 for sheet, df in dfs.items():
                     nombre_csv = f"{prefijo}_{sheet}.csv"
                     ruta_csv = target_dir / nombre_csv
                     df.to_csv(ruta_csv, index=False, encoding='utf-8-sig')
-                return str(target_dir) # Retornamos la carpeta
+                return str(target_dir) 
             except Exception as e:
                 logger.error(f"Error escribiendo CSVs {prefijo}: {e}")
                 raise e

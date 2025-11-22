@@ -108,24 +108,25 @@ class EtlService:
             raise RecalculoError(f"Fallo recalculo: {e}") from e
 
     def run_fase2_update(self, progress_callback_text=None, progress_callback_percent=None, scopes: List[str] = None):
-        """
-        Actualiza las CAs buscando su ficha en la web.
-        :param scopes: Lista de strings ['candidatas', 'seguimiento', 'ofertadas'] o None para todo.
-        """
         emit_text, emit_percent = self._create_progress_emitters(progress_callback_text, progress_callback_percent)
         
         try:
+            # Validación de Token: Si no tenemos sesión, intentamos obtenerla rápido
+            if not self.scraper_service.headers_sesion:
+                emit_text("Token de sesión no detectado. Usando clave pública (puede fallar si hay bloqueo)...")
+                # Nota: No podemos lanzar Playwright aquí fácilmente porque estamos en un hilo secundario
+                # y Playwright requiere estar en el hilo principal o asyncio.
+                # Confiamos en la key hardcodeada o en que el usuario hizo un scrape reciente.
+
             emit_text("Seleccionando CAs para actualizar...")
             
             lists_to_process = []
             
-            # Si scopes es None o contiene 'all', traemos todo (comportamiento antiguo)
             if not scopes or 'all' in scopes:
                 lists_to_process.append(self.db_service.obtener_datos_tab3_seguimiento())
                 lists_to_process.append(self.db_service.obtener_datos_tab4_ofertadas())
                 lists_to_process.append(self.db_service.obtener_candidatas_top_para_actualizar(umbral_minimo=10))
             else:
-                # Comportamiento selectivo
                 if 'seguimiento' in scopes:
                     lists_to_process.append(self.db_service.obtener_datos_tab3_seguimiento())
                 if 'ofertadas' in scopes:
@@ -133,7 +134,6 @@ class EtlService:
                 if 'candidatas' in scopes:
                     lists_to_process.append(self.db_service.obtener_candidatas_top_para_actualizar(umbral_minimo=10))
             
-            # Deduplicación (por si una CA está en varias listas lógicas, aunque no debería)
             mapa = {}
             for lst in lists_to_process:
                 for ca in lst: mapa[ca.ca_id] = ca
@@ -142,9 +142,6 @@ class EtlService:
             
             if not procesar:
                 emit_text("No hay licitaciones seleccionadas para actualizar."); emit_percent(100); return
-
-            if not self.scraper_service.headers_sesion:
-                 emit_text("Token no disponible. Intentando capturar...")
 
             emit_text(f"Actualizando {len(procesar)} CAs desde la web...")
             self._procesar_lista_fase_2(procesar, emit_text, emit_percent)
@@ -156,33 +153,38 @@ class EtlService:
 
     def _procesar_lista_fase_2(self, lista_cas, emit_text, emit_percent):
         total = len(lista_cas)
+        self.score_engine.recargar_reglas() # Asegurar reglas frescas
+
         for i, lic in enumerate(lista_cas):
             percent = int(((i+1)/total)*90)
             emit_percent(percent)
             emit_text(f"Actualizando: {lic.codigo_ca}")
             
-            url = construir_url_api_ficha(lic.codigo_ca)
-            datos = self.scraper_service._fetch_api_con_requests(url)
+            # Intentar obtener datos de la API
+            datos = self.scraper_service.scrape_ficha_detalle_api(None, lic.codigo_ca, emit_text)
             
-            if datos and datos.get('success') == 'OK' and 'payload' in datos:
-                p = datos['payload']
-                data_ficha = {
-                    'descripcion': p.get('descripcion'),
-                    'direccion_entrega': p.get('direccion_entrega'),
-                    'fecha_cierre_p1': p.get('fecha_cierre_primer_llamado'),
-                    'fecha_cierre_p2': p.get('fecha_cierre_segundo_llamado'),
-                    'productos_solicitados': p.get('productos_solicitados', []),
-                    'estado': p.get('estado'),
-                    'cantidad_provedores_cotizando': p.get('cantidad_provedores_cotizando'),
-                    'estado_convocatoria': p.get('estado_convocatoria'),
-                    'plazo_entrega': p.get('plazo_entrega')
+            if datos:
+                # Si obtuvimos datos, recalculamos TODO
+                
+                # 1. Recalcular Fase 1 (para tener la base del puntaje)
+                item_f1 = {
+                    'nombre': lic.nombre, 
+                    'estado_ca_texto': lic.estado_ca_texto, 
+                    'organismo_comprador': lic.organismo.nombre if lic.organismo else ""
                 }
+                pts1, det1 = self.score_engine.calcular_puntuacion_fase_1(item_f1)
                 
-                item_f1 = {'nombre': lic.nombre, 'estado_ca_texto': lic.estado_ca_texto, 'organismo_comprador': lic.organismo.nombre if lic.organismo else ""}
-                pts1, _ = self.score_engine.calcular_puntuacion_fase_1(item_f1)
-                pts2, det2 = self.score_engine.calcular_puntuacion_fase_2(data_ficha)
+                # 2. Calcular Fase 2 (con la descripción y productos descargados)
+                pts2, det2 = self.score_engine.calcular_puntuacion_fase_2(datos)
                 
-                self.db_service.actualizar_ca_con_fase_2(lic.codigo_ca, data_ficha, pts1+pts2, det2)
+                # 3. Sumar y Guardar
+                total_score = pts1 + pts2
+                full_detail = det1 + det2 # Combinar listas
+                
+                # Actualizar en DB con la lista de detalles LIMPIA
+                self.db_service.actualizar_ca_con_fase_2(lic.codigo_ca, datos, total_score, full_detail)
+            else:
+                logger.warning(f"No se pudo descargar ficha para {lic.codigo_ca}")
             
             time.sleep(0.5)
 

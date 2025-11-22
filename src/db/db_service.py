@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-from typing import List, Dict, Tuple, Optional, Union
-from datetime import datetime, timedelta 
+from typing import List, Dict, Tuple, Optional, Union, Set
+from datetime import datetime, timedelta
 from sqlalchemy.orm import sessionmaker, Session, joinedload
 from sqlalchemy import select, delete, or_, update, and_
+from sqlalchemy.dialects.postgresql import insert
 
 from .db_models import (
     CaLicitacion,
@@ -10,7 +11,7 @@ from .db_models import (
     CaOrganismo,
     CaSector,
     CaKeyword,
-    CaOrganismoRegla,      
+    CaOrganismoRegla,
 )
 
 from config.config import UMBRAL_FASE_1, UMBRAL_FINAL_RELEVANTE
@@ -23,83 +24,88 @@ class DbService:
         self.session_factory = session_factory
         logger.info("DbService inicializado.")
 
-    def _get_or_create_organismo_sector(
-        self, session: Session, nombre_organismo: str, nombre_sector: str
-    ) -> CaOrganismo:
-        if not nombre_sector: nombre_sector = "No Especificado"
-        nombre_sector_norm = nombre_sector.strip()
-        nombre_organismo_norm = nombre_organismo.strip()
+    def _preparar_mapa_organismos(self, session: Session, nombres_organismos: Set[str]) -> Dict[str, int]:
+        if not nombres_organismos:
+            return {}
         
-        stmt_sector = select(CaSector).where(CaSector.nombre == nombre_sector_norm)
-        sector = session.scalars(stmt_sector).first()
-        if not sector:
-            sector = CaSector(nombre=nombre_sector_norm)
-            session.add(sector)
-            session.flush()
+        nombres_norm = {n.strip() for n in nombres_organismos if n}
+        stmt = select(CaOrganismo.nombre, CaOrganismo.organismo_id).where(CaOrganismo.nombre.in_(nombres_norm))
+        existentes = {nombre: oid for nombre, oid in session.execute(stmt).all()}
+        
+        faltantes = nombres_norm - set(existentes.keys())
+        
+        if faltantes:
+            sector_default = session.scalars(select(CaSector).limit(1)).first()
+            if not sector_default:
+                sector_default = CaSector(nombre="General")
+                session.add(sector_default)
+                session.flush()
             
-        if not nombre_organismo_norm: nombre_organismo_norm = "Organismo No Especificado"
+            nuevos_orgs = [{"nombre": nombre, "sector_id": sector_default.sector_id} for nombre in faltantes]
+            session.execute(insert(CaOrganismo), nuevos_orgs)
             
-        stmt_org = select(CaOrganismo).where(CaOrganismo.nombre == nombre_organismo_norm)
-        organismo = session.scalars(stmt_org).first()
-        if not organismo:
-            organismo = CaOrganismo(nombre=nombre_organismo_norm, sector_id=sector.sector_id)
-            session.add(organismo)
-            session.flush()
-        return organismo
+            stmt_nuevos = select(CaOrganismo.nombre, CaOrganismo.organismo_id).where(CaOrganismo.nombre.in_(faltantes))
+            for nombre, oid in session.execute(stmt_nuevos).all():
+                existentes[nombre] = oid
+                
+        return existentes
 
     def insertar_o_actualizar_licitaciones_raw(self, compras: List[Dict]):
-        logger.info(f"Iniciando (ELT) Carga de {len(compras)} CAs crudas...")
-        codigos_procesados = set()
-        nuevos_inserts = 0
-        actualizaciones = 0
+        if not compras:
+            return
+
+        logger.info(f"Iniciando Carga Masiva (Bulk Upsert) de {len(compras)} registros...")
         
         with self.session_factory() as session:
             try:
+                nombres_orgs = {c.get("organismo", "No Especificado") for c in compras}
+                mapa_orgs = self._preparar_mapa_organismos(session, nombres_orgs)
+                
+                data_to_upsert = []
+                codigos_vistos = set()
+
                 for item in compras:
                     codigo = item.get("codigo", item.get("id"))
-                    if not codigo: continue
-                    if codigo in codigos_procesados: continue
-                    codigos_procesados.add(codigo)
+                    if not codigo or codigo in codigos_vistos:
+                        continue
+                    codigos_vistos.add(codigo)
                     
-                    nombre_org_raw = item.get("organismo", "No Especificado")
-                    nombre_sec_raw = item.get("unidad", "No Especificado")
-                    organismo_db = self._get_or_create_organismo_sector(session, nombre_org_raw, nombre_sec_raw)
-                    
-                    stmt = select(CaLicitacion).where(CaLicitacion.codigo_ca == codigo)
-                    licitacion_existente = session.scalars(stmt).first()
-                    
-                    estado_convocatoria_val = item.get("estado_convocatoria")
-                    
-                    if licitacion_existente:
-                        licitacion_existente.proveedores_cotizando = item.get("cantidad_provedores_cotizando")
-                        licitacion_existente.estado_ca_texto = item.get("estado")
-                        licitacion_existente.fecha_cierre = item.get("fecha_cierre")
-                        if estado_convocatoria_val is not None:
-                            licitacion_existente.estado_convocatoria = estado_convocatoria_val
-                        actualizaciones += 1
-                    else:
-                        nueva_licitacion = CaLicitacion(
-                            codigo_ca=codigo,
-                            nombre=item.get("nombre"),
-                            monto_clp=item.get("monto_disponible_CLP"),
-                            fecha_publicacion=item.get("fecha_publicacion"),
-                            fecha_cierre=item.get("fecha_cierre"),
-                            proveedores_cotizando=item.get("cantidad_provedores_cotizando"),
-                            estado_ca_texto=item.get("estado"),
-                            estado_convocatoria=estado_convocatoria_val,
-                            organismo_id=organismo_db.organismo_id,
-                            puntuacion_final=0,
-                            puntaje_detalle=[] 
-                        )
-                        session.add(nueva_licitacion)
-                        nuevos_inserts += 1
-                session.commit()
-                logger.info(f"Carga (L) exitosa: {nuevos_inserts} nuevos, {actualizaciones} actualizados.")
+                    org_nombre = item.get("organismo", "No Especificado").strip()
+                    org_id = mapa_orgs.get(org_nombre)
+
+                    record = {
+                        "codigo_ca": codigo,
+                        "nombre": item.get("nombre"),
+                        "monto_clp": item.get("monto_disponible_CLP"),
+                        "fecha_publicacion": item.get("fecha_publicacion"),
+                        "fecha_cierre": item.get("fecha_cierre"),
+                        "proveedores_cotizando": item.get("cantidad_provedores_cotizando"),
+                        "estado_ca_texto": item.get("estado"),
+                        "estado_convocatoria": item.get("estado_convocatoria"),
+                        "organismo_id": org_id,
+                    }
+                    data_to_upsert.append(record)
+
+                if data_to_upsert:
+                    stmt = insert(CaLicitacion).values(data_to_upsert)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=['codigo_ca'],
+                        set_={
+                            "proveedores_cotizando": stmt.excluded.proveedores_cotizando,
+                            "estado_ca_texto": stmt.excluded.estado_ca_texto,
+                            "fecha_cierre": stmt.excluded.fecha_cierre,
+                            "estado_convocatoria": stmt.excluded.estado_convocatoria,
+                            "monto_clp": stmt.excluded.monto_clp
+                        }
+                    )
+                    session.execute(stmt)
+                    session.commit()
+                    logger.info("Carga Masiva completada exitosamente.")
             except Exception as e:
-                logger.error(f"Error al hacer commit en lote (Carga): {e}", exc_info=True)
+                logger.error(f"Error en Bulk Upsert: {e}", exc_info=True)
                 session.rollback()
                 raise e
-    
+
     def obtener_candidatas_para_recalculo_fase_1(self) -> List[CaLicitacion]:
         with self.session_factory() as session:
             stmt = select(CaLicitacion).where(
@@ -118,7 +124,7 @@ class DbService:
                 joinedload(CaLicitacion.seguimiento)
             )
             return session.scalars(stmt).all()
-    
+
     def actualizar_puntajes_fase_1_en_lote(self, actualizaciones: List[Union[Tuple[int, int], Tuple[int, int, List[str]]]]):
         if not actualizaciones: return
         
@@ -152,9 +158,7 @@ class DbService:
                 )
                 .order_by(CaLicitacion.fecha_cierre.asc())
             )
-            candidatas = session.scalars(stmt).all()
-            logger.info(f"Se encontraron {len(candidatas)} CAs 'Top' (>{umbral_minimo}pts) para Fase 2 automática.")
-            return candidatas
+            return session.scalars(stmt).all()
 
     def obtener_candidatas_top_para_actualizar(self, umbral_minimo: int = 10) -> List[CaLicitacion]:
         with self.session_factory() as session:
@@ -172,7 +176,7 @@ class DbService:
             return session.scalars(stmt).all()
 
     def actualizar_ca_con_fase_2(
-        self, codigo_ca: str, datos_fase_2: Dict, puntuacion_total: int, detalle_extra: List[str]
+        self, codigo_ca: str, datos_fase_2: Dict, puntuacion_total: int, detalle_completo: List[str]
     ):
         with self.session_factory() as session:
             try:
@@ -187,9 +191,8 @@ class DbService:
                 licitacion.puntuacion_final = puntuacion_total
                 licitacion.plazo_entrega = datos_fase_2.get("plazo_entrega")
                 
-                detalle_actual = licitacion.puntaje_detalle or []
-                if not isinstance(detalle_actual, list): detalle_actual = []
-                licitacion.puntaje_detalle = detalle_actual + detalle_extra
+                # CORRECCIÓN: Reemplazamos el detalle completo, no concatenamos
+                licitacion.puntaje_detalle = detalle_completo 
                 
                 licitacion.fecha_cierre_segundo_llamado = datos_fase_2.get("fecha_cierre_p2")
                 
@@ -254,13 +257,57 @@ class DbService:
 
     def obtener_datos_tab3_seguimiento(self) -> List[CaLicitacion]:
         with self.session_factory() as session:
-            stmt = select(CaLicitacion).options(joinedload(CaLicitacion.seguimiento), joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)).join(CaSeguimiento, CaLicitacion.ca_id == CaSeguimiento.ca_id).filter(CaSeguimiento.es_favorito == True).order_by(CaLicitacion.fecha_cierre.asc())
+            stmt = select(CaLicitacion).options(
+                joinedload(CaLicitacion.seguimiento), 
+                joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)
+            ).join(CaSeguimiento, CaLicitacion.ca_id == CaSeguimiento.ca_id).filter(CaSeguimiento.es_favorito == True).order_by(CaLicitacion.fecha_cierre.asc())
             return session.scalars(stmt).all()
 
     def obtener_datos_tab4_ofertadas(self) -> List[CaLicitacion]:
         with self.session_factory() as session:
-            stmt = select(CaLicitacion).options(joinedload(CaLicitacion.seguimiento), joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)).join(CaSeguimiento, CaLicitacion.ca_id == CaSeguimiento.ca_id).filter(CaSeguimiento.es_ofertada == True).order_by(CaLicitacion.fecha_cierre.asc())
+            stmt = select(CaLicitacion).options(
+                joinedload(CaLicitacion.seguimiento), 
+                joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)
+            ).join(CaSeguimiento, CaLicitacion.ca_id == CaSeguimiento.ca_id).filter(CaSeguimiento.es_ofertada == True).order_by(CaLicitacion.fecha_cierre.asc())
             return session.scalars(stmt).all()
+
+    def _to_dict_safe(self, licitaciones: List[CaLicitacion]) -> List[Dict]:
+        resultados = []
+        for ca in licitaciones:
+            resultados.append({
+                "puntuacion_final": ca.puntuacion_final,
+                "codigo_ca": ca.codigo_ca,
+                "nombre": ca.nombre,
+                "descripcion": ca.descripcion,
+                "organismo_nombre": ca.organismo.nombre if ca.organismo else "N/A",
+                "direccion_entrega": ca.direccion_entrega,
+                "estado_ca_texto": ca.estado_ca_texto,
+                "fecha_publicacion": ca.fecha_publicacion,
+                "fecha_cierre": ca.fecha_cierre,
+                "fecha_cierre_segundo_llamado": ca.fecha_cierre_segundo_llamado,
+                "proveedores_cotizando": ca.proveedores_cotizando,
+                "productos_solicitados": ca.productos_solicitados,
+                "es_favorito": ca.seguimiento.es_favorito if ca.seguimiento else False,
+                "es_ofertada": ca.seguimiento.es_ofertada if ca.seguimiento else False,
+            })
+        return resultados
+
+    def obtener_datos_exportacion_tab1(self) -> List[Dict]:
+        with self.session_factory() as session:
+            # Obtenemos las instancias con relaciones cargadas
+            objs = self.obtener_datos_tab1_candidatas(umbral_minimo=0) 
+            # Convertimos a dict DENTRO de la sesión para evitar error Detached
+            return self._to_dict_safe(objs)
+
+    def obtener_datos_exportacion_tab3(self) -> List[Dict]:
+        with self.session_factory() as session:
+            objs = self.obtener_datos_tab3_seguimiento()
+            return self._to_dict_safe(objs)
+
+    def obtener_datos_exportacion_tab4(self) -> List[Dict]:
+        with self.session_factory() as session:
+            objs = self.obtener_datos_tab4_ofertadas()
+            return self._to_dict_safe(objs)
 
     def _gestionar_seguimiento(self, ca_id: int, es_favorito: bool | None, es_ofertada: bool | None):
         with self.session_factory() as session:

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Motor de Puntuación (Score Engine).
-Versión Final: Soporte completo para puntajes diferenciados 
-(Nombre vs Descripción vs Productos) y generación de detalles.
+Versión Blindada: Normalización agresiva y manejo seguro de listas vacías.
 """
 import unicodedata
 from typing import Dict, List, Set, Tuple
@@ -22,7 +21,7 @@ class ScoreEngine:
         self.recargar_reglas()
 
     def recargar_reglas(self):
-        """Carga todas las reglas desde la BD a memoria RAM para velocidad."""
+        """Carga todas las reglas desde la BD a memoria RAM."""
         logger.info("ScoreEngine: Recargando reglas y keywords...")
         try:
             self.keywords_cache = self.db_service.get_all_keywords()
@@ -53,17 +52,21 @@ class ScoreEngine:
         except: pass
 
     def _norm(self, txt): 
-        """Normaliza texto: minúsculas, sin tildes."""
+        """
+        Normalización Agresiva:
+        1. None -> ""
+        2. Elimina tildes (á -> a).
+        3. Todo a minúsculas.
+        4. Elimina saltos de línea, tabulaciones y espacios dobles.
+        """
         if not txt: return ""
-        return ''.join(c for c in unicodedata.normalize('NFD', txt.lower()) if unicodedata.category(c) != 'Mn')
+        # Paso 1: Descomponer caracteres unicode (NFD) y eliminar marcas (Mn)
+        s = ''.join(c for c in unicodedata.normalize('NFD', str(txt).lower()) if unicodedata.category(c) != 'Mn')
+        # Paso 2: Reemplazar cualquier espacio en blanco (tabs, newlines) por espacio simple
+        return " ".join(s.split())
 
     def calcular_puntuacion_fase_1(self, licitacion_raw: dict) -> Tuple[int, List[str]]:
-        """
-        Calcula puntaje basado en:
-        1. Organismo (Prioritario / No deseado)
-        2. Estado (2do llamado)
-        3. Keywords en el TÍTULO (Nombre)
-        """
+        """Cálculo base: Organismo + Título + Estado"""
         org_norm = self._norm(licitacion_raw.get("organismo_comprador"))
         nom_norm = self._norm(licitacion_raw.get("nombre"))
         
@@ -76,8 +79,7 @@ class ScoreEngine:
         # 1. Organismo
         org_id = self.organismo_name_to_id_map.get(org_norm)
         
-        # Si no encontramos el ID exacto por nombre, intentamos buscar coincidencia parcial
-        # (Esto es opcional pero ayuda si el nombre varía ligeramente)
+        # Búsqueda flexible por si el nombre varía ligeramente
         if not org_id:
             for name_key, oid in self.organismo_name_to_id_map.items():
                 if name_key == org_norm:
@@ -93,19 +95,18 @@ class ScoreEngine:
                 puntaje += pts
                 detalle.append(f"Org. Prioritario (+{pts})")
 
-        # 2. Estado (Segundo Llamado)
+        # 2. Estado
         est_norm = self._norm(licitacion_raw.get("estado_ca_texto"))
         if "segundo llamado" in est_norm: 
             puntaje += PUNTOS_SEGUNDO_LLAMADO
             if PUNTOS_SEGUNDO_LLAMADO != 0:
                 detalle.append(f"2° Llamado (+{PUNTOS_SEGUNDO_LLAMADO})")
         
-        # 3. Keywords en NOMBRE (Título)
+        # 3. Keywords en NOMBRE
         for kw in self.keywords_cache:
-            if kw.puntos_nombre == 0: continue # Optimización
+            if kw.puntos_nombre == 0: continue
             
             kw_norm = self._norm(kw.keyword)
-            # Buscamos la keyword dentro del nombre normalizado
             if kw_norm in nom_norm:
                 puntaje += kw.puntos_nombre
                 signo = "+" if kw.puntos_nombre > 0 else ""
@@ -114,22 +115,23 @@ class ScoreEngine:
         return max(0, puntaje), detalle
 
     def calcular_puntuacion_fase_2(self, datos_ficha: dict) -> Tuple[int, List[str]]:
-        """
-        Calcula puntaje EXTRA (Fase 2) basado en:
-        1. Keywords en DESCRIPCIÓN
-        2. Keywords en PRODUCTOS SOLICITADOS
-        """
+        """Cálculo profundo: Descripción + Productos"""
         puntaje = 0
         detalle = []
         
+        # Normalizar Descripción
         desc_norm = self._norm(datos_ficha.get("descripcion"))
         
-        # Aplanar lista de productos a un solo string para buscar rápido
-        prods_raw = datos_ficha.get("productos_solicitados", [])
+        # Normalizar Productos (Corrección de Bug: Manejo de None)
+        prods_raw = datos_ficha.get("productos_solicitados")
+        if prods_raw is None: 
+            prods_raw = [] # Asegurar que sea lista vacía y no None
+            
         txt_prods = ""
-        if prods_raw and isinstance(prods_raw, list):
+        if isinstance(prods_raw, list):
             parts = []
             for p in prods_raw:
+                # Extraer texto de cada producto con seguridad
                 n = p.get("nombre") or ""
                 d = p.get("descripcion") or ""
                 parts.append(self._norm(f"{n} {d}"))
@@ -137,6 +139,7 @@ class ScoreEngine:
 
         for kw in self.keywords_cache:
             kw_norm = self._norm(kw.keyword)
+            if not kw_norm: continue
             
             # Check Descripción
             if kw.puntos_descripcion != 0 and desc_norm:
