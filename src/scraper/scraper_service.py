@@ -65,7 +65,6 @@ class ScraperService:
 
         try:
             logger.info("Navegando al sitio...")
-            # Reducido timeout a 30s para no colgar la app
             page.goto("https://buscador.mercadopublico.cl/compra-agil", wait_until="commit", timeout=30000)
             
             time.sleep(5) 
@@ -80,7 +79,7 @@ class ScraperService:
                 except: pass
 
             intentos = 0
-            max_intentos = 15 # Reducido para mayor respuesta
+            max_intentos = 15 
             while "authorization" not in headers_capturados and intentos < max_intentos:
                 time.sleep(1)
                 intentos += 1
@@ -112,10 +111,14 @@ class ScraperService:
             logger.error(f"Error obteniendo credenciales: {e}")
             raise e
         finally:
-            # Asegurar cierre del navegador
             try:
                 browser.close()
             except: pass
+
+    def refrescar_sesion(self, progress_callback: Callable[[str], None]):
+        """Fuerza la obtención de un nuevo token iniciando el navegador."""
+        with sync_playwright() as p:
+            self._obtener_credenciales(p, progress_callback)
 
     def run_scraper_listado(self, progress_callback: Callable[[str], None], filtros: Optional[Dict] = None, max_paginas: Optional[int] = None) -> List[Dict]:
         logger.info(f"INICIANDO FASE 1. Filtros: {filtros}")
@@ -126,12 +129,8 @@ class ScraperService:
                 self._obtener_credenciales(p, progress_callback)
             except Exception as e:
                 logger.error(f"Fallo crítico obteniendo token: {e}")
-                # Si falla el token, no podemos seguir
                 raise e
             
-            # Fase de extracción con requests
-            # Lanzamos un browser headless ligero solo para tener contexto si fuera necesario, 
-            # aunque aquí usaremos principalmente requests con los headers capturados.
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(extra_http_headers=self.headers_sesion)
             api_request = context.request 
@@ -139,8 +138,6 @@ class ScraperService:
             try:
                 current_page = 1
                 total_paginas = 1
-                
-                # Límite de seguridad por si la API reporta páginas infinitas
                 LIMIT_SAFETY_PAGES = 500 
 
                 while True:
@@ -153,9 +150,7 @@ class ScraperService:
                         break
 
                     progress_callback(f"Procesando página {current_page}...")
-                    
                     url = construir_url_api_listado(current_page, filtros)
-                    
                     datos = self._ejecutar_peticion_api(api_request, url)
                     
                     if not datos:
@@ -168,23 +163,18 @@ class ScraperService:
                     if current_page == 1:
                         total_paginas = meta.get('pageCount', 0)
                         logger.info(f"Total páginas encontradas: {total_paginas}")
-                        
                         if total_paginas == 0:
-                            logger.warning("La API retornó 0 páginas. Verificar filtros o token.")
                             break
                     
                     todas_las_compras.extend(items)
                     current_page += 1
-                    
-                    # Pequeña pausa para ser amables con el servidor
                     time.sleep(random.uniform(0.5, 1.0))
 
             except Exception as e:
                 logger.critical(f"Error Fase 1: {e}")
                 raise e
             finally:
-                try:
-                    browser.close()
+                try: browser.close()
                 except: pass
 
         unicas = {c.get('codigo', c.get('id')): c for c in todas_las_compras if c.get('codigo', c.get('id'))}
@@ -227,10 +217,7 @@ class ScraperService:
                 if response.ok:
                     return response.json()
                 elif response.status == 429:
-                    # Rate Limit: Esperar más
                     time.sleep(DELAY_RETRY * 2)
-                else:
-                    logger.warning(f"API Status {response.status}: {url}")
             except Exception as e:
                 logger.debug(f"Error intento {intento}: {e}")
             time.sleep(DELAY_RETRY)

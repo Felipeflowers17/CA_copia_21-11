@@ -10,7 +10,6 @@ logger = configurar_logger(__name__)
 class ContextMenuMixin:
     """
     Maneja los menús de clic derecho para las tablas.
-    Actualizado para soportar ProxyModel (usando data() e index() en lugar de item()).
     """
 
     def mostrar_menu_contextual(self, pos):
@@ -23,31 +22,22 @@ class ContextMenuMixin:
         row = index.row()
         model = sender_table.model()
         
-        # --- CORRECCIÓN: Usar métodos abstractos compatibles con ProxyModel ---
-        
         # 1. Obtener el Código CA
-        # En TableManagerMixin, guardamos el código en la Columna 1 (Nombre), bajo UserRole + 1
         idx_nombre = model.index(row, 1)
         codigo_ca = model.data(idx_nombre, Qt.UserRole + 1)
         
-        # Fallback por si falla la carga del dato específico, intentamos el texto visible
         if not codigo_ca:
             codigo_ca = model.data(idx_nombre, Qt.DisplayRole)
 
         # 2. Obtener el ID Interno (ca_id)
-        # Guardado en la Columna 0 (Score), bajo UserRole
         idx_score = model.index(row, 0)
         ca_id = model.data(idx_score, Qt.UserRole)
 
         if not ca_id: 
             return
 
-        # ---------------------------------------------------------------------
-
         menu = QMenu(self)
         table_name = sender_table.objectName()
-        
-        # Convertir a string por seguridad
         codigo_str = str(codigo_ca) if codigo_ca else ""
 
         # --- Pestaña 1: CANDIDATAS ---
@@ -58,11 +48,11 @@ class ContextMenuMixin:
 
             menu.addSeparator()
 
-            act_fav = QAction("Favoritos", self)
+            act_fav = QAction("Mover a Favoritos", self)
             act_fav.triggered.connect(lambda: self.gestionar_estado(ca_id, "favorito", True))
             menu.addAction(act_fav)
             
-            act_ofer = QAction("Ofertadas", self)
+            act_ofer = QAction("Mover a Ofertadas", self)
             act_ofer.triggered.connect(lambda: self.gestionar_estado(ca_id, "ofertada", True))
             menu.addAction(act_ofer)
             
@@ -80,6 +70,12 @@ class ContextMenuMixin:
             
             menu.addSeparator()
 
+            # --- NUEVO: Opción para Mover a Ofertadas ---
+            act_ofer = QAction("Mover a Ofertadas", self)
+            act_ofer.triggered.connect(lambda: self.gestionar_estado(ca_id, "ofertada", True))
+            menu.addAction(act_ofer)
+            # ---------------------------------------------
+
             act_unfav = QAction("Quitar de Favoritos", self)
             act_unfav.triggered.connect(lambda: self.gestionar_estado(ca_id, "favorito", False))
             menu.addAction(act_unfav)
@@ -93,6 +89,7 @@ class ContextMenuMixin:
             menu.addSeparator()
             
             act_unofer = QAction("Quitar de Ofertadas", self)
+            # Al quitar de ofertadas, volverá a favoritos (si estaba marcado) o candidatas
             act_unofer.triggered.connect(lambda: self.gestionar_estado(ca_id, "ofertada", False))
             menu.addAction(act_unofer)
 
@@ -115,7 +112,6 @@ class ContextMenuMixin:
 
     def abrir_link_web(self, codigo_ca):
         if not codigo_ca: return
-        # Limpieza básica por si el código viene sucio
         clean_code = codigo_ca.split(" ")[0].strip()
         url = f"https://buscador.mercadopublico.cl/ficha?code={clean_code}"
         webbrowser.open(url)

@@ -369,7 +369,17 @@ class MainWindow(FluentWindow, ThreadingMixin, MainSlotsMixin, DataLoaderMixin, 
         self.addSubInterface(self.seguimientoInterface, FIF.HEART, "Seguimiento", NavigationItemPosition.TOP)
         self.addSubInterface(self.ofertadasInterface, FIF.SHOPPING_CART, "Ofertadas", NavigationItemPosition.TOP)
         self.navigationInterface.addSeparator()
-        self.navigationInterface.addItem(routeKey="update_web", icon=FIF.GLOBE, text="Actualizar Info Web", onClick=self._show_update_flyout, position=NavigationItemPosition.TOP)
+        
+        # --- CAMBIO AQUI: Nombre del botón actualizado ---
+        self.navigationInterface.addItem(
+            routeKey="update_web",
+            icon=FIF.GLOBE, 
+            text="Actualizar info pestañas", 
+            onClick=self._show_update_flyout,
+            position=NavigationItemPosition.TOP
+        )
+        # -------------------------------------------------
+
         self.addSubInterface(self.toolsInterface, FIF.TILES, "Herramientas", NavigationItemPosition.TOP)
         self.navigationInterface.addWidget(routeKey="progress_widget", widget=self.progress_container, onClick=lambda: None, position=NavigationItemPosition.BOTTOM)
         self.navigationInterface.addItem(routeKey="refresh", icon=FIF.SYNC, text="Refrescar Tablas", onClick=self.on_load_data_thread, position=NavigationItemPosition.BOTTOM)
@@ -432,10 +442,10 @@ class MainWindow(FluentWindow, ThreadingMixin, MainSlotsMixin, DataLoaderMixin, 
 
     @Slot()
     def on_settings_changed(self):
-        logger.info("Configuración interna actualizada.")
+        logger.info("Configuración interna actualizada."); self.score_engine.recargar_reglas()
         try:
-            self.score_engine.recargar_reglas()
-            # Se eliminó el mensaje emergente para evitar interrupciones
+            # Sin mensaje emergente como solicitaste antes
+            pass
         except Exception as e:
             logger.error(f"Error recargando reglas: {e}")
             QMessageBox.critical(self, "Error", f"No se pudieron aplicar los cambios:\n{e}")

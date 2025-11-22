@@ -36,27 +36,45 @@ class EtlService:
     def _transform_puntajes_fase_1(self, progress_callback_text=None, progress_callback_percent=None):
         emit_text, emit_percent = self._create_progress_emitters(progress_callback_text, progress_callback_percent)
         try:
-            licitaciones = self.db_service.obtener_todas_candidatas_fase_1_para_recalculo()
-            if not licitaciones: return
+            licitaciones_dicts = self.db_service.obtener_todas_candidatas_fase_1_para_recalculo()
+            if not licitaciones_dicts: return
             
-            total = len(licitaciones)
+            total = len(licitaciones_dicts)
             emit_text(f"Recalculando {total} CAs...")
             
-            lista = []
-            for i, lic in enumerate(licitaciones):
-                item = { 
-                    'codigo': lic.codigo_ca,
-                    'nombre': lic.nombre, 
-                    'estado_ca_texto': lic.estado_ca_texto, 
-                    'organismo_comprador': lic.organismo.nombre if lic.organismo else "" 
+            lista_actualizaciones = []
+            
+            for i, lic_data in enumerate(licitaciones_dicts):
+                item_f1 = { 
+                    'codigo': lic_data['codigo_ca'],
+                    'nombre': lic_data['nombre'], 
+                    'estado_ca_texto': lic_data['estado_ca_texto'], 
+                    'organismo_comprador': lic_data['organismo_nombre']
                 }
-                p, det = self.score_engine.calcular_puntuacion_fase_1(item)
-                lista.append((lic.ca_id, p, det))
+                pts1, det1 = self.score_engine.calcular_puntuacion_fase_1(item_f1)
+                
+                pts2 = 0
+                det2 = []
+                
+                desc = lic_data.get('descripcion')
+                prods = lic_data.get('productos_solicitados')
+                
+                if desc or (prods and len(prods) > 0):
+                    item_f2 = {
+                        'descripcion': desc,
+                        'productos_solicitados': prods
+                    }
+                    pts2, det2 = self.score_engine.calcular_puntuacion_fase_2(item_f2)
+                
+                total_score = pts1 + pts2
+                total_detail = det1 + det2
+                
+                lista_actualizaciones.append((lic_data['ca_id'], total_score, total_detail))
                 
                 if i % 100 == 0:
                     emit_percent(int(((i+1)/total)*100))
-                
-            self.db_service.actualizar_puntajes_fase_1_en_lote(lista)
+            
+            self.db_service.actualizar_puntajes_fase_1_en_lote(lista_actualizaciones)
             
         except Exception as e:
             raise DatabaseTransformError(f"Error cálculo puntajes: {e}") from e
@@ -111,12 +129,14 @@ class EtlService:
         emit_text, emit_percent = self._create_progress_emitters(progress_callback_text, progress_callback_percent)
         
         try:
-            # Validación de Token: Si no tenemos sesión, intentamos obtenerla rápido
+            # VERIFICACIÓN Y REFRESCO DE TOKEN
             if not self.scraper_service.headers_sesion:
-                emit_text("Token de sesión no detectado. Usando clave pública (puede fallar si hay bloqueo)...")
-                # Nota: No podemos lanzar Playwright aquí fácilmente porque estamos en un hilo secundario
-                # y Playwright requiere estar en el hilo principal o asyncio.
-                # Confiamos en la key hardcodeada o en que el usuario hizo un scrape reciente.
+                emit_text("Token caducado. Refrescando credenciales (navegador oculto)...")
+                try:
+                    self.scraper_service.refrescar_sesion(emit_text)
+                except Exception as e:
+                    logger.error(f"No se pudo refrescar sesión: {e}")
+                    # Intentamos continuar, pero es probable que falle
 
             emit_text("Seleccionando CAs para actualizar...")
             
@@ -153,35 +173,25 @@ class EtlService:
 
     def _procesar_lista_fase_2(self, lista_cas, emit_text, emit_percent):
         total = len(lista_cas)
-        self.score_engine.recargar_reglas() # Asegurar reglas frescas
+        self.score_engine.recargar_reglas()
 
         for i, lic in enumerate(lista_cas):
             percent = int(((i+1)/total)*90)
             emit_percent(percent)
             emit_text(f"Actualizando: {lic.codigo_ca}")
             
-            # Intentar obtener datos de la API
             datos = self.scraper_service.scrape_ficha_detalle_api(None, lic.codigo_ca, emit_text)
             
             if datos:
-                # Si obtuvimos datos, recalculamos TODO
-                
-                # 1. Recalcular Fase 1 (para tener la base del puntaje)
                 item_f1 = {
                     'nombre': lic.nombre, 
                     'estado_ca_texto': lic.estado_ca_texto, 
                     'organismo_comprador': lic.organismo.nombre if lic.organismo else ""
                 }
                 pts1, det1 = self.score_engine.calcular_puntuacion_fase_1(item_f1)
-                
-                # 2. Calcular Fase 2 (con la descripción y productos descargados)
                 pts2, det2 = self.score_engine.calcular_puntuacion_fase_2(datos)
-                
-                # 3. Sumar y Guardar
                 total_score = pts1 + pts2
-                full_detail = det1 + det2 # Combinar listas
-                
-                # Actualizar en DB con la lista de detalles LIMPIA
+                full_detail = det1 + det2
                 self.db_service.actualizar_ca_con_fase_2(lic.codigo_ca, datos, total_score, full_detail)
             else:
                 logger.warning(f"No se pudo descargar ficha para {lic.codigo_ca}")
