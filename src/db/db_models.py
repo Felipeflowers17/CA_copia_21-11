@@ -49,6 +49,7 @@ class CaLicitacion(Base):
     proveedores_cotizando: Mapped[Optional[int]] = mapped_column(Integer)
     descripcion: Mapped[Optional[str]] = mapped_column(String)
     direccion_entrega: Mapped[Optional[str]] = mapped_column(String(1000))
+    plazo_entrega: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
     # Campos JSON
     productos_solicitados: Mapped[Optional[list[dict[str, any]]]] = mapped_column(JSON, nullable=True)

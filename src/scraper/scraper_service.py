@@ -23,8 +23,8 @@ class ScraperService:
         self.headers_sesion = {} 
 
     def _obtener_credenciales(self, p: Playwright, progress_callback: Callable[[str], None]):
-        logger.info("Iniciando navegador con camuflaje manual...")
-        progress_callback("Abriendo Chrome (Modo Stealth Manual)...")
+        logger.info(f"Iniciando navegador (Headless={MODO_HEADLESS})...")
+        progress_callback("Abriendo Chrome para autenticación...")
         
         args = [
             "--disable-blink-features=AutomationControlled", 
@@ -33,17 +33,19 @@ class ScraperService:
             "--disable-infobars"
         ]
 
+        # CORRECCION 1: Respetar MODO_HEADLESS aquí también para evitar ventanas molestas
         try:
-            browser = p.chromium.launch(channel="chrome", headless=False, args=args)
+            browser = p.chromium.launch(channel="chrome", headless=MODO_HEADLESS, args=args)
         except:
             logger.warning("Chrome no encontrado, usando Chromium base.")
-            browser = p.chromium.launch(headless=False, args=args)
+            browser = p.chromium.launch(headless=MODO_HEADLESS, args=args)
         
         context = browser.new_context(
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         )
         
+        # Script anti-detección básico
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
@@ -69,10 +71,11 @@ class ScraperService:
             
             time.sleep(5) 
 
+            # Interacción mínima si estamos en modo visible o si el headless permite interacción básica
             if "authorization" not in headers_capturados:
                 try:
+                    # Simular movimiento solo para disparar carga si es necesario
                     page.mouse.move(200, 200)
-                    page.mouse.move(400, 400)
                     btn = page.get_by_role("button", name="Buscar")
                     if btn.is_visible():
                         btn.click()
@@ -131,7 +134,8 @@ class ScraperService:
                 logger.error(f"Fallo crítico obteniendo token: {e}")
                 raise e
             
-            browser = p.chromium.launch(headless=True)
+            # CORRECCION 2: Usar MODO_HEADLESS también en Fase 1
+            browser = p.chromium.launch(headless=MODO_HEADLESS)
             context = browser.new_context(extra_http_headers=self.headers_sesion)
             api_request = context.request 
 
@@ -193,20 +197,47 @@ class ScraperService:
             return None
 
     def scrape_ficha_detalle_api(self, page: Page, codigo_ca: str, progress_callback: Callable[[str], None]) -> Optional[Dict]:
+        """
+        Extrae el detalle completo de una ficha.
+        CORREGIDO: Ahora extrae plazo_entrega y mapea correctamente el estado.
+        """
         url_api = construir_url_api_ficha(codigo_ca)
         datos = self._fetch_api_con_requests(url_api)
         
         if datos and datos.get('success') == 'OK' and 'payload' in datos:
             payload = datos['payload']
+            
+            # --- LÓGICA DE ESTADO ---
+            # A veces la API devuelve 'estado' como texto ("Desierta")
+            # y a veces usa 'estado_convocatoria' (int) o 'id_estado' (int).
+            # Priorizamos el texto que viene directamente si existe.
+            estado_texto = payload.get('estado')
+            if not estado_texto and payload.get('motivo_desierta'):
+                estado_texto = "Desierta"
+            
+            # Si el estado es "Publicada", verificamos si es 2do llamado por si acaso
+            if estado_texto == "Publicada" and payload.get('fecha_cierre_segundo_llamado'):
+                # (Opcional) Podríamos dejar solo "Publicada" y que la GUI decida mostrar "(2° Llamado)"
+                # pero para consistencia con tu reporte:
+                pass 
+
             return {
                 'descripcion': payload.get('descripcion'),
                 'direccion_entrega': payload.get('direccion_entrega'),
                 'fecha_cierre_p1': payload.get('fecha_cierre_primer_llamado'),
                 'fecha_cierre_p2': payload.get('fecha_cierre_segundo_llamado'),
                 'productos_solicitados': payload.get('productos_solicitados', []),
-                'estado': payload.get('estado'),
+                
+                # CORRECCION 3: Usar el campo de texto directo para el estado
+                'estado': estado_texto, 
+                
                 'cantidad_provedores_cotizando': payload.get('cantidad_provedores_cotizando'),
-                'estado_convocatoria': payload.get('estado_convocatoria')
+                
+                # CORRECCION 4: Asegurar extracción de estado_convocatoria (int)
+                'estado_convocatoria': payload.get('estado_convocatoria'),
+                
+                # CORRECCION 5: Extraer plazo de entrega
+                'plazo_entrega': payload.get('plazo_entrega') 
             }
         return None
 

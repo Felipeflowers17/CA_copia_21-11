@@ -30,7 +30,7 @@ DELAY_ENTRE_PAGINAS = 1
 MAX_RETRIES = 3            
 DELAY_RETRY = 5            
 
-MODO_HEADLESS = os.getenv('HEADLESS', 'True').lower() == 'true'
+MODO_HEADLESS = os.getenv('HEADLESS', 'False').lower() == 'false'
 
 # Seguridad: No hardcodear keys reales en código fuente.
 # Se debe proveer por variable de entorno.

@@ -12,6 +12,7 @@ from .db_models import (
     CaSector,
     CaKeyword,
     CaOrganismoRegla,
+    TipoReglaOrganismo 
 )
 
 from config.config import UMBRAL_FASE_1, UMBRAL_FINAL_RELEVANTE
@@ -95,25 +96,15 @@ class DbService:
                 CaLicitacion.productos_solicitados,
                 CaOrganismo.nombre.label("organismo_nombre")
             ).outerjoin(CaOrganismo, CaLicitacion.organismo_id == CaOrganismo.organismo_id)
-            
             rows = session.execute(stmt).all()
             resultados = []
             for row in rows:
                 resultados.append({
-                    "ca_id": row.ca_id,
-                    "codigo_ca": row.codigo_ca,
-                    "nombre": row.nombre,
-                    "estado_ca_texto": row.estado_ca_texto,
-                    "organismo_nombre": row.organismo_nombre or "",
-                    "descripcion": row.descripcion, 
-                    "productos_solicitados": row.productos_solicitados
+                    "ca_id": row.ca_id, "codigo_ca": row.codigo_ca, "nombre": row.nombre,
+                    "estado_ca_texto": row.estado_ca_texto, "organismo_nombre": row.organismo_nombre or "",
+                    "descripcion": row.descripcion, "productos_solicitados": row.productos_solicitados
                 })
             return resultados
-
-    def obtener_candidatas_para_recalculo_fase_1(self) -> List[CaLicitacion]:
-        with self.session_factory() as session:
-            stmt = select(CaLicitacion).where(CaLicitacion.puntuacion_final == 0, CaLicitacion.descripcion.is_(None)).options(joinedload(CaLicitacion.organismo), joinedload(CaLicitacion.seguimiento))
-            return session.scalars(stmt).all()
 
     def actualizar_puntajes_fase_1_en_lote(self, actualizaciones: List[Union[Tuple[int, int], Tuple[int, int, List[str]]]]):
         if not actualizaciones: return
@@ -144,6 +135,7 @@ class DbService:
                 stmt = select(CaLicitacion).where(CaLicitacion.codigo_ca == codigo_ca)
                 licitacion = session.scalars(stmt).first()
                 if not licitacion: return
+                
                 licitacion.descripcion = datos_fase_2.get("descripcion")
                 licitacion.productos_solicitados = datos_fase_2.get("productos_solicitados")
                 licitacion.direccion_entrega = datos_fase_2.get("direccion_entrega")
@@ -151,10 +143,19 @@ class DbService:
                 licitacion.plazo_entrega = datos_fase_2.get("plazo_entrega")
                 licitacion.puntaje_detalle = detalle_completo 
                 licitacion.fecha_cierre_segundo_llamado = datos_fase_2.get("fecha_cierre_p2")
+                
+                nuevo_estado_texto = datos_fase_2.get("estado")
+                if nuevo_estado_texto:
+                    licitacion.estado_ca_texto = nuevo_estado_texto
+
                 est = datos_fase_2.get("estado_convocatoria")
                 if est is not None: licitacion.estado_convocatoria = est
+                
                 session.commit()
-            except Exception as e: logger.error(f"[Fase 2] Error {codigo_ca}: {e}"); session.rollback(); raise
+            except Exception as e: 
+                logger.error(f"[Fase 2] Error actualizando {codigo_ca}: {e}")
+                session.rollback()
+                raise
 
     def get_licitacion_by_id(self, ca_id: int) -> Optional[CaLicitacion]:
         with self.session_factory() as session:
@@ -181,13 +182,12 @@ class DbService:
 
     def obtener_datos_tab3_seguimiento(self) -> List[CaLicitacion]:
         with self.session_factory() as session:
-            # CAMBIO AQUI: Excluir Ofertadas para que el flujo sea "Mover"
             stmt = select(CaLicitacion).options(
                 joinedload(CaLicitacion.seguimiento), 
                 joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)
             ).join(CaSeguimiento, CaLicitacion.ca_id == CaSeguimiento.ca_id).filter(
                 CaSeguimiento.es_favorito == True,
-                CaSeguimiento.es_ofertada == False  # <--- NUEVO FILTRO
+                CaSeguimiento.es_ofertada == False 
             ).order_by(CaLicitacion.fecha_cierre.asc())
             return session.scalars(stmt).all()
 
@@ -218,7 +218,7 @@ class DbService:
                 if seguimiento:
                     if es_favorito is not None: seguimiento.es_favorito = es_favorito
                     if es_ofertada is not None: seguimiento.es_ofertada = es_ofertada; 
-                    if es_ofertada: seguimiento.es_favorito = True # Garantiza que siga en sistema
+                    if es_ofertada: seguimiento.es_favorito = True
                 elif es_favorito or es_ofertada:
                     nuevo = CaSeguimiento(ca_id=ca_id, es_favorito=es_favorito or es_ofertada, es_ofertada=es_ofertada if es_ofertada is not None else False)
                     session.add(nuevo)
@@ -238,12 +238,28 @@ class DbService:
 
     def get_all_keywords(self) -> List[CaKeyword]:
         with self.session_factory() as session: return session.scalars(select(CaKeyword).order_by(CaKeyword.keyword)).all()
+
+    # --- FUNCIÓN CORREGIDA Y COINCIDENTE ---
     def add_keyword(self, keyword: str, tipo: str, puntos: int) -> CaKeyword:
         with self.session_factory() as session:
-            nuevo = CaKeyword(keyword=keyword.lower().strip(), tipo=tipo, puntos=puntos)
-            session.add(nuevo); session.commit(); session.refresh(nuevo); return nuevo
+            nuevo = CaKeyword(keyword=keyword.lower().strip())
+            
+            if tipo in ["titulo_pos", "titulo_neg"]:
+                nuevo.puntos_nombre = puntos
+                nuevo.puntos_descripcion = puntos 
+            elif tipo == "producto":
+                nuevo.puntos_productos = puntos
+            
+            session.add(nuevo)
+            session.commit()
+            session.refresh(nuevo)
+            return nuevo
+    # ----------------------------------------
+
     def delete_keyword(self, keyword_id: int):
-        with self.session_factory() as session: session.query(CaKeyword).filter_by(keyword_id=keyword_id).delete(); session.commit()
+        with self.session_factory() as session:
+            session.query(CaKeyword).filter_by(keyword_id=keyword_id).delete()
+            session.commit()
 
     def get_all_organismo_reglas(self) -> List[CaOrganismoRegla]:
         with self.session_factory() as session: return session.scalars(select(CaOrganismoRegla).options(joinedload(CaOrganismoRegla.organismo))).all()

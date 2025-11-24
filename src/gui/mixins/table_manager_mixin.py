@@ -1,112 +1,129 @@
 # -*- coding: utf-8 -*-
-from PySide6.QtWidgets import (
-    QWidget, QTableView, QAbstractItemView, QHeaderView
-)
-from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor, QBrush, QFont
+from PySide6.QtGui import QStandardItem, QBrush, QColor
 from PySide6.QtCore import Qt
-from typing import List
+from PySide6.QtWidgets import QTableView, QHeaderView, QAbstractItemView
 
-from src.utils.logger import configurar_logger
-from src.db.db_models import CaLicitacion
-from src.gui.delegates import ElidedTextDelegate
-
-logger = configurar_logger(__name__)
-
-COLUMN_HEADERS_UNIFIED = [
-    "Score", "Nombre", "Organismo", "Estado", "Fecha Pub.", "Fecha Cierre", "Monto", "Prov."
+COLUMN_HEADERS = [
+    "Score", 
+    "Nombre", 
+    "Organismo", 
+    "Estado", 
+    "Fecha Pub.", 
+    "Fecha Cierre", 
+    "Monto"
 ]
-COLUMN_HEADERS = COLUMN_HEADERS_UNIFIED
 
 class TableManagerMixin:
-    
-    def _crear_pestaña_tabla(self, placeholder: str, tab_id: str):
-        return QWidget(), None, None, None
-
-    def crear_tabla_view(self, model: QStandardItemModel, tab_id: str) -> QTableView:
-        table_view = QTableView()
+    def crear_tabla_view(self, model, object_name):
+        table = QTableView(self)
+        table.setObjectName(object_name)
+        table.setModel(model)
         
-        table_view.setObjectName(tab_id)
-        table_view.setSortingEnabled(True)
+        model.setHorizontalHeaderLabels(COLUMN_HEADERS)
         
-        table_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table_view.setAlternatingRowColors(True)
-        table_view.verticalHeader().setDefaultSectionSize(38)
-        table_view.verticalHeader().hide()
+        # Configuración de comportamiento
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        table.horizontalHeader().setStretchLastSection(True)
         
-        delegate = ElidedTextDelegate(table_view)
-        table_view.setItemDelegateForColumn(1, delegate)
-        table_view.setItemDelegateForColumn(2, delegate)
+        # Configuración de anchos
+        table.setColumnWidth(0, 60)   # Score
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch) # Nombre
+        table.setColumnWidth(2, 180)  # Organismo
+        table.setColumnWidth(3, 100)  # Estado
+        table.setColumnWidth(4, 90)   # Fecha Pub
+        table.setColumnWidth(5, 110)  # Fecha Cierre
+        table.setColumnWidth(6, 100)  # Monto
+        
+        table.setSortingEnabled(True)
+        
+        # --- CRÍTICO: Habilitar menú contextual (Click Derecho) ---
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        # ----------------------------------------------------------
 
-        header = table_view.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed); table_view.setColumnWidth(0, 60)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents) 
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed); table_view.setColumnWidth(6, 110)
-        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed); table_view.setColumnWidth(7, 50)
+        from src.gui.delegates import ElidedTextDelegate
+        table.setItemDelegateForColumn(1, ElidedTextDelegate(table))
+        table.setItemDelegateForColumn(2, ElidedTextDelegate(table))
+        
+        return table
 
-        return table_view
-
-    def poblar_tabla(self, model: QStandardItemModel, data: List[CaLicitacion]):
-        model.setRowCount(0)
-        model.setHorizontalHeaderLabels(COLUMN_HEADERS_UNIFIED)
-        bold_font = QFont(); bold_font.setBold(True)
-
-        for licitacion in data:
-            score_item = QStandardItem()
-            score_val = licitacion.puntuacion_final or 0
-            score_item.setData(score_val, Qt.ItemDataRole.DisplayRole)
-            score_item.setData(licitacion.ca_id, Qt.UserRole)
+    def poblar_tabla(self, model, data_list):
+        model.removeRows(0, model.rowCount())
+        
+        for data in data_list:
+            # Score
+            score = getattr(data, 'puntuacion_final', 0)
+            item_score = QStandardItem(str(score))
+            item_score.setData(score, Qt.DisplayRole) 
+            # ID oculto para lógica de negocio (Doble click, Menú contextual)
+            item_score.setData(getattr(data, 'ca_id', None), Qt.UserRole + 1)
             
-            detalles = getattr(licitacion, 'puntaje_detalle', []) or []
-            if detalles and len(detalles) > 0:
-                tooltip_text = "<b>Desglose del Puntaje:</b><br>"
-                for det in detalles:
-                    det_clean = str(det).replace("<", "").replace(">", "").strip()
-                    tooltip_text += f"• {det_clean}<br>"
-                score_item.setToolTip(tooltip_text)
-            else:
-                score_item.setToolTip("Sin detalle disponible")
+            # --- RECUPERAR TOOLTIP (Detalle del puntaje) ---
+            detalles = getattr(data, 'puntaje_detalle', [])
+            if detalles and isinstance(detalles, list):
+                tooltip_text = "\n".join(str(d) for d in detalles)
+                item_score.setToolTip(tooltip_text)
+            # -----------------------------------------------
             
-            if score_val >= 10:
-                score_item.setBackground(QBrush(QColor(220, 255, 220)))
-
-            nombre_item = QStandardItem(licitacion.nombre)
-            if (licitacion.seguimiento and (licitacion.seguimiento.es_favorito or licitacion.seguimiento.es_ofertada)):
-                nombre_item.setFont(bold_font)
+            # Colores (Solo celda Score)
+            bg_color = None
+            if score >= 500: bg_color = QColor("#dff6dd") 
+            elif score >= 10: bg_color = QColor("#e6f7ff") 
+            elif score == 0: bg_color = QColor("#ffffff") 
+            elif score < 0: bg_color = QColor("#ffe6e6") 
             
-            search_data = f"{licitacion.codigo_ca} {licitacion.nombre} {licitacion.organismo.nombre if licitacion.organismo else ''}".lower()
-            nombre_item.setData(search_data, Qt.UserRole)
-            nombre_item.setData(licitacion.codigo_ca, Qt.UserRole + 1)
+            if bg_color: item_score.setBackground(QBrush(bg_color))
+
+            # Nombre
+            nombre = getattr(data, 'nombre', 'Sin Nombre') or 'Sin Nombre'
+            item_nombre = QStandardItem(nombre)
+            item_nombre.setToolTip(nombre)
+            item_nombre.setData(nombre, Qt.UserRole)
+
+            # Organismo
+            org_obj = getattr(data, 'organismo', None)
+            org_nombre = org_obj.nombre if org_obj else 'N/A'
+            item_org = QStandardItem(org_nombre)
+            item_org.setToolTip(org_nombre)
+            item_org.setData(org_nombre, Qt.UserRole) 
+
+            # Estado
+            estado_txt = getattr(data, 'estado_ca_texto', 'N/A') or 'N/A'
+            item_estado = QStandardItem(estado_txt)
+            item_estado.setData(getattr(data, 'estado_convocatoria', 0), Qt.UserRole)
+            item_estado.setData(estado_txt, Qt.UserRole + 2)
+
+            # Fecha Pub
+            f_pub = getattr(data, 'fecha_publicacion', None)
+            f_pub_str = f_pub.strftime("%d-%m") if f_pub else ""
+            item_fpub = QStandardItem(f_pub_str)
+            item_fpub.setData(f_pub, Qt.UserRole)
+
+            # Fecha Cierre
+            f_cierre = getattr(data, 'fecha_cierre', None)
+            f_cierre_str = f_cierre.strftime("%d-%m %H:%M") if f_cierre else ""
+            item_fcierre = QStandardItem(f_cierre_str)
+            item_fcierre.setData(f_cierre, Qt.UserRole)
+
+            # Monto
+            monto = getattr(data, 'monto_clp', 0)
+            monto_val = float(monto) if monto is not None else 0
+            monto_str = f"${int(monto_val):,}".replace(",", ".") if monto is not None else "N/A"
+            item_monto = QStandardItem(monto_str)
+            item_monto.setData(monto_val, Qt.UserRole)
+
+            row_items = [
+                item_score, 
+                item_nombre, 
+                item_org, 
+                item_estado, 
+                item_fpub, 
+                item_fcierre, 
+                item_monto
+            ]
             
-            org_nombre = licitacion.organismo.nombre if licitacion.organismo else "No Especificado"
-            organismo_item = QStandardItem(org_nombre)
-
-            estado_str = licitacion.estado_ca_texto or "N/A"
-            if licitacion.estado_convocatoria == 2: estado_str += " (2°)"
-            estado_item = QStandardItem(estado_str)
-            estado_item.setData(licitacion.estado_convocatoria, Qt.UserRole)
-            estado_item.setData(licitacion.estado_ca_texto, Qt.UserRole + 2)
-
-            f_pub = licitacion.fecha_publicacion
-            pub_str = f_pub.strftime("%d-%m") if f_pub else "-"
-            pub_item = QStandardItem(pub_str)
-            pub_item.setData(f_pub, Qt.UserRole)
-
-            f_cierre = licitacion.fecha_cierre
-            cierre_str = f_cierre.strftime("%d-%m %H:%M") if f_cierre else "-"
-            cierre_item = QStandardItem(cierre_str)
-            cierre_item.setData(f_cierre, Qt.UserRole)
-
-            monto_val = licitacion.monto_clp or 0
-            monto_item = QStandardItem(f"$ {int(monto_val):,}".replace(",", ".") if monto_val else "-")
-            monto_item.setData(monto_val, Qt.UserRole)
-
-            prov_item = QStandardItem()
-            prov_item.setData(licitacion.proveedores_cotizando or 0, Qt.ItemDataRole.DisplayRole)
-
-            model.appendRow([score_item, nombre_item, organismo_item, estado_item, pub_item, cierre_item, monto_item, prov_item])
+            model.appendRow(row_items)

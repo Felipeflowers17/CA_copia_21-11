@@ -3,8 +3,9 @@
 Mixin para los Slots (acciones) de los botones principales.
 """
 
+# --- CORRECCIÓN: Se eliminó 'Quser' que causaba el error ---
 from PySide6.QtWidgets import QMessageBox, QSystemTrayIcon, QDialog
-from PySide6.QtCore import Slot 
+from PySide6.QtCore import Slot, Qt
 import datetime 
 
 from src.gui.gui_scraping_dialog import ScrapingDialog
@@ -20,6 +21,69 @@ class MainSlotsMixin:
     Este Mixin maneja las acciones disparadas por los
     botones principales de la barra de herramientas.
     """
+    @Slot(object)
+    def on_table_double_clicked(self, index):
+        """
+        Se dispara al hacer doble clic en cualquier tabla.
+        Busca el ID oculto de forma robusta y abre el Drawer.
+        """
+        if not index.isValid():
+            return
+            
+        proxy_model = index.model()
+        row = index.row()
+        ca_id = None
+
+        # --- BÚSQUEDA ROBUSTA DEL ID ---
+        # A veces el ID está en la Columna 0 (Score) o Columna 1 (Nombre)
+        # Y puede estar en el UserRole (32) o UserRole+1 (33)
+        
+        columnas_a_revisar = [0, 1] 
+        roles_a_revisar = [Qt.UserRole, Qt.UserRole + 1]
+
+        for col in columnas_a_revisar:
+            idx = proxy_model.index(row, col)
+            for role in roles_a_revisar:
+                data = proxy_model.data(idx, role)
+                
+                # Caso 1: El dato es directamente el ID (int)
+                if isinstance(data, int) and data > 0:
+                    ca_id = data
+                    break
+                
+                # Caso 2: El dato es un diccionario completo (común en algunos diseños)
+                if isinstance(data, dict) and 'ca_id' in data:
+                    ca_id = data['ca_id']
+                    break
+            if ca_id: break
+
+        if not ca_id:
+            # Intento de último recurso: Buscar en columnas ocultas (ej. col 2)
+            idx_oculto = proxy_model.index(row, 2)
+            val = proxy_model.data(idx_oculto, Qt.UserRole)
+            if isinstance(val, int): ca_id = val
+
+        if not ca_id:
+             logger.warning(f"ERROR: No se encontró CA_ID en la fila {row}. Revisa table_manager_mixin.py")
+             return
+
+        logger.info(f"Abriendo detalle para CA ID: {ca_id}")
+        
+        # Ejecutar consulta en hilo secundario
+        self.start_task(
+            task=self.db_service.get_licitacion_by_id,
+            on_result=self.on_detail_data_loaded,
+            on_error=self.on_task_error,
+            task_args=(ca_id,)
+        )
+
+    def on_detail_data_loaded(self, licitacion_obj):
+        """Callback cuando la BD devuelve el objeto completo."""
+        if licitacion_obj and hasattr(self, 'detail_drawer'):
+            self.detail_drawer.set_data(licitacion_obj)
+            self.detail_drawer.open_drawer()
+        else:
+            logger.error("No se pudo cargar el detalle de la licitación.")
 
     def _show_task_completion_notification(self, title: str, message: str, is_auto: bool = False, is_error: bool = False):
         if self.tray_icon:
@@ -115,15 +179,11 @@ class MainSlotsMixin:
         if config["mode"] == "to_db":
             task_to_run = self.etl_service.run_etl_live_to_db
         elif config["mode"] == "to_json":
-            # Nota: Asumimos que existe run_etl_live_to_json o similar, 
-            # si no, el usuario debe asegurar que exista.
-            # Por defecto en el código anterior era live_to_db lo principal.
             task_to_run = self.etl_service.run_etl_live_to_db 
             
         if task_to_run is None:
             return
         
-        # CORRECCIÓN CRÍTICA: Usar task_kwargs para 'config'
         self.start_task(
             task=task_to_run,
             on_result=lambda: logger.info("Proceso ETL completo OK"),
@@ -131,7 +191,7 @@ class MainSlotsMixin:
             on_finished=self.on_scraping_completed,
             on_progress=self.on_progress_update,
             on_progress_percent=self.on_progress_percent_update,
-            task_kwargs={"config": config}, # <--- CAMBIO AQUÍ
+            task_kwargs={"config": config}, 
         )
 
     @Slot()
@@ -202,7 +262,6 @@ class MainSlotsMixin:
         try:
             self.score_engine.recargar_reglas()
             logger.info("Reglas de ScoreEngine recargadas.")
-            # self.reload_timers_config() # Si existiera método de timers
             QMessageBox.information(
                 self, "Configuración Actualizada",
                 "La configuración se ha guardado. Recuerda recalcular puntajes si cambiaste reglas."
@@ -259,7 +318,6 @@ class MainSlotsMixin:
         config = { "mode": "to_db", "date_from": yesterday, "date_to": today, "max_paginas": 100 }
         logger.info("PILOTO AUTOMÁTICO (Fase 1): Iniciando tarea...")
         
-        # CORRECCIÓN CRÍTICA: Usar task_kwargs
         self.start_task(
             task=self.etl_service.run_etl_live_to_db,
             on_result=lambda: logger.info("PILOTO AUTOMÁTICO (Fase 1): Proceso ETL completo OK"),
@@ -267,12 +325,12 @@ class MainSlotsMixin:
             on_finished=self.on_auto_task_finished, 
             on_progress=self.on_progress_update,
             on_progress_percent=self.on_progress_percent_update,
-            task_kwargs={"config": config}, # <--- CAMBIO AQUÍ
+            task_kwargs={"config": config}, 
         )
 
     @Slot()
     def on_run_fase2_update_thread_auto(self):
-        logger.info("PILOTO AUTOMÁTICO: Disparado Timer (Fase 2)")
+        logger.info("PILOTO AUTOMÁTICO: (Fase 2)")
         if self.is_task_running:
             logger.warning("PILOTO AUTOMÁTICO (Fase 2): Omitido. Otra tarea ya está en ejecución.")
             return

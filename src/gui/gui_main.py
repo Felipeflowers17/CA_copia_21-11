@@ -10,7 +10,7 @@ from PySide6.QtGui import QStandardItemModel, QIcon, QAction, QFont
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QFrame, QSystemTrayIcon, QMenu, QStyle, QFileDialog,
-    QLabel, QScrollArea, QComboBox, QMessageBox
+    QLabel, QScrollArea, QComboBox, QMessageBox, QAbstractSpinBox
 )
 
 from qfluentwidgets import (
@@ -19,7 +19,7 @@ from qfluentwidgets import (
     ToolButton, Flyout, FlyoutAnimationType, SwitchButton, StrongBodyLabel, 
     CalendarPicker, PrimaryPushButton
 )
-
+from src.gui.gui_detail_drawer import DetailDrawer
 from src.gui.gui_worker import Worker
 from src.gui.gui_tools import GuiToolsWidget
 from src.utils.logger import configurar_logger
@@ -176,6 +176,8 @@ class TableInterface(QWidget):
         h_monto.addStretch()
         spin_monto = SpinBox()
         spin_monto.setRange(0, 999999999); spin_monto.setSingleStep(100000); spin_monto.setFixedWidth(140)
+
+        spin_monto.setButtonSymbols(QAbstractSpinBox.NoButtons)
         spin_monto.setValue(self.filter_state["monto"])
         spin_monto.valueChanged.connect(lambda v: self._update_filter("monto", v))
         h_monto.addWidget(spin_monto)
@@ -355,6 +357,7 @@ class MainWindow(FluentWindow, ThreadingMixin, MainSlotsMixin, DataLoaderMixin, 
         self.toolsInterface.start_recalculate_signal.connect(lambda: self.on_run_recalculate_thread(silent=True))
         self.toolsInterface.settings_changed_signal.connect(self.on_settings_changed)
         self.toolsInterface.autopilot_config_changed_signal.connect(lambda: self.settings_manager.load_settings())
+        self.detail_drawer = DetailDrawer(self)
 
         self.initNavigation()
         self._setup_tray_icon()
@@ -363,6 +366,11 @@ class MainWindow(FluentWindow, ThreadingMixin, MainSlotsMixin, DataLoaderMixin, 
         self.scheduler_timer.start(30000)
         QTimer.singleShot(500, self.on_load_data_thread)
         QTimer.singleShot(3000, self.iniciar_limpieza_silenciosa)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'detail_drawer'):
+            self.detail_drawer.resize(self.detail_drawer.width(), self.height())
 
     def initNavigation(self):
         self.addSubInterface(self.unifiedInterface, FIF.HOME, "Candidatas", NavigationItemPosition.TOP)
@@ -422,6 +430,10 @@ class MainWindow(FluentWindow, ThreadingMixin, MainSlotsMixin, DataLoaderMixin, 
         ui4.searchBar.textChanged.connect(lambda: self.update_proxy_filter(self.proxy_tab4, ui4))
         ui4.filtersChanged.connect(lambda: self.update_proxy_filter(self.proxy_tab4, ui4))
         self.table_ofertadas.customContextMenuRequested.connect(self.mostrar_menu_contextual)
+
+        self.table_unified.doubleClicked.connect(self.on_table_double_clicked)
+        self.table_seguimiento.doubleClicked.connect(self.on_table_double_clicked)
+        self.table_ofertadas.doubleClicked.connect(self.on_table_double_clicked)
 
     def update_proxy_filter(self, proxy_model, ui_obj):
         proxy_model.set_filter_parameters(

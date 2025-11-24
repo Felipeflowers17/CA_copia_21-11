@@ -92,7 +92,7 @@ class DetailDrawer(QWidget):
         self.lblFechaPub = self._add_field("Publicación:", "", vertical=False)
         self.lblFechaCierre = self._add_field("Cierre:", "", vertical=False)
         self.lblFechaCierre2 = self._add_field("Cierre 2° Llamado:", "", vertical=False)
-        self.lblPlazoEntrega = self._add_field("Plazo de entrega:", "", vertical=False)
+        # Se movio Plazo de entrega a la siguiente sección
         self.lblMonto = self._add_field("Monto:", "", vertical=False)
         self.lblProveedores = self._add_field("Proveedores:", "", vertical=False)
 
@@ -101,6 +101,7 @@ class DetailDrawer(QWidget):
         self._add_section_title("Descripción y Entrega")
         self.lblOrganismo = self._add_field("Organismo:", "", vertical=True)
         self.lblDireccion = self._add_field("Dirección Entrega:", "", vertical=True)
+        self.lblPlazoEntrega = self._add_field("Plazo de entrega:", "", vertical=False) # <--- AQUI ESTA AHORA
         
         self.sheetLayout.addWidget(StrongBodyLabel("Descripción completa:", self))
         self.lblDescTexto = BodyLabel("", self)
@@ -190,8 +191,14 @@ class DetailDrawer(QWidget):
         self.lblFechaCierre.setText(f_cierre)
         self.lblFechaCierre2.setText(f_cierre2)
         
-        if licitacion.plazo_entrega is not None: self.lblPlazoEntrega.setText(f"{licitacion.plazo_entrega} días")
-        else: self.lblPlazoEntrega.setText("No especificado")
+        # Formato de dias
+        if licitacion.plazo_entrega is not None: 
+            if licitacion.plazo_entrega == 1:
+                self.lblPlazoEntrega.setText("1 día")
+            else:
+                self.lblPlazoEntrega.setText(f"{licitacion.plazo_entrega} días")
+        else: 
+            self.lblPlazoEntrega.setText("No especificado")
         
         m = licitacion.monto_clp or 0
         self.lblMonto.setText(f"$ {int(m):,}".replace(",", "."))
@@ -205,7 +212,6 @@ class DetailDrawer(QWidget):
         prods = licitacion.productos_solicitados
         if prods and isinstance(prods, list):
             for p in prods:
-                # CORRECCION CRITICA AQUI: Manejo de None
                 nm = (p.get('nombre') or 'Item').strip()
                 ds = (p.get('descripcion') or '').strip()
                 un = (p.get('unidad_medida') or 'unid').strip()
