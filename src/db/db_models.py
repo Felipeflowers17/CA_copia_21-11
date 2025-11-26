@@ -69,6 +69,7 @@ class CaSeguimiento(Base):
     ca_id: Mapped[int] = mapped_column(ForeignKey("ca_licitacion.ca_id", ondelete="CASCADE"), primary_key=True)
     es_favorito: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     es_ofertada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    es_oculta: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     notas: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     licitacion: Mapped["CaLicitacion"] = relationship(back_populates="seguimiento")
 

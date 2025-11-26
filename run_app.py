@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import subprocess
 from pathlib import Path
+
+# --- CORRECCIÓN CRÍTICA PARA EXE ---
+# Forzamos a Playwright a buscar los navegadores en la carpeta del usuario
+# y no dentro de la carpeta temporal del .exe (_MEI...)
+if sys.platform == 'win32':
+    local_app_data = os.getenv('LOCALAPPDATA')
+    if local_app_data:
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(local_app_data, 'ms-playwright')
+# -----------------------------------
 
 # Configuración del Path para PyInstaller
 if getattr(sys, 'frozen', False):
@@ -25,6 +35,22 @@ from alembic.config import Config
 from alembic.command import upgrade
 
 logger = configurar_logger("run_app")
+
+def check_playwright_browsers():
+    """
+    Verifica e instala los navegadores de Playwright si no existen.
+    Crítico para el primer uso del .exe en un equipo limpio.
+    """
+    try:
+        logger.info("Verificando entorno de navegadores Playwright...")
+        # Solo forzamos la instalación si estamos en modo compilado (.exe)
+        if getattr(sys, 'frozen', False):
+            # Intentamos ejecutar la instalación pasando el entorno modificado
+            subprocess.run(["playwright", "install", "chromium"], check=True, env=os.environ)
+            logger.info("Navegadores verificados correctamente.")
+    except Exception as e:
+        logger.error(f"Error verificando navegadores: {e}")
+        # No lanzamos error fatal para permitir que la app intente arrancar
 
 def run_migrations():
     logger.info("Verificando estado de la base de datos...")
@@ -51,27 +77,31 @@ def run_migrations():
         logger.critical(f"Error al ejecutar migraciones: {e}", exc_info=True)
 
 def main():
-    # Crear la app primero para poder mostrar Splash
     app = QApplication(sys.argv)
     font = QFont("Segoe UI", 10)
     app.setFont(font)
     app.setQuitOnLastWindowClosed(False)
 
-    # Splash Screen Simple (Solo texto si no hay imagen)
     splash = QSplashScreen()
-    splash.showMessage("Iniciando Monitor CA...\nVerificando Base de Datos...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
+    splash.showMessage("Iniciando Monitor CA...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
     splash.show()
     
-    # Procesar eventos para que se pinte el splash antes de bloquear con migraciones
     QCoreApplication.processEvents()
 
-    # 1. Ejecutar Migraciones
+    # 1. Verificar Navegadores (Playwright)
+    splash.showMessage("Verificando componentes web...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
+    QCoreApplication.processEvents()
+    check_playwright_browsers()
+
+    # 2. Ejecutar Migraciones (Base de Datos)
+    splash.showMessage("Conectando a Base de Datos...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
+    QCoreApplication.processEvents()
     run_migrations()
     
     splash.showMessage("Cargando Interfaz...", Qt.AlignBottom | Qt.AlignCenter, Qt.black)
     QCoreApplication.processEvents()
 
-    # 2. Iniciar GUI
+    # 3. Iniciar GUI Principal
     try:
         from src.gui.gui_main import MainWindow
         window = MainWindow()

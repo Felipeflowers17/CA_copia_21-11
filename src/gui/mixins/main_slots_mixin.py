@@ -31,6 +31,13 @@ class MainSlotsMixin:
             return
             
         proxy_model = index.model()
+
+        if index.column() == 7: # Columna de Notas
+            nota_texto = index.data(Qt.UserRole)
+            if nota_texto and str(nota_texto).strip():
+                QMessageBox.information(self, "Nota Personal", str(nota_texto))
+            return # Detenemos aquí para no abrir el drawer
+
         row = index.row()
         ca_id = None
 

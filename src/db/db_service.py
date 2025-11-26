@@ -176,8 +176,22 @@ class DbService:
 
     def obtener_datos_tab1_candidatas(self, umbral_minimo: int = 5) -> List[CaLicitacion]:
         with self.session_factory() as session:
-            subq = select(CaSeguimiento.ca_id).where(or_(CaSeguimiento.es_favorito == True, CaSeguimiento.es_ofertada == True))
-            stmt = select(CaLicitacion).options(joinedload(CaLicitacion.seguimiento), joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)).filter(CaLicitacion.puntuacion_final >= umbral_minimo, CaLicitacion.ca_id.notin_(subq)).order_by(CaLicitacion.puntuacion_final.desc())
+            # Excluir Favoritas, Ofertadas Y AHORA TAMBIÉN OCULTAS
+            subq = select(CaSeguimiento.ca_id).where(
+                or_(
+                    CaSeguimiento.es_favorito == True, 
+                    CaSeguimiento.es_ofertada == True,
+                    CaSeguimiento.es_oculta == True  
+                )
+            )
+            stmt = select(CaLicitacion).options(
+                joinedload(CaLicitacion.seguimiento), 
+                joinedload(CaLicitacion.organismo).joinedload(CaOrganismo.sector)
+            ).filter(
+                CaLicitacion.puntuacion_final >= umbral_minimo, 
+                CaLicitacion.ca_id.notin_(subq)
+            ).order_by(CaLicitacion.puntuacion_final.desc())
+            
             return session.scalars(stmt).all()
 
     def obtener_datos_tab3_seguimiento(self) -> List[CaLicitacion]:
@@ -227,6 +241,34 @@ class DbService:
 
     def gestionar_favorito(self, ca_id: int, es_favorito: bool): self._gestionar_seguimiento(ca_id, es_favorito=es_favorito, es_ofertada=None)
     def gestionar_ofertada(self, ca_id: int, es_ofertada: bool): self._gestionar_seguimiento(ca_id, es_favorito=None, es_ofertada=es_ofertada)
+    def gestionar_oculta(self, ca_id: int, ocultar: bool = True):
+        with self.session_factory() as session:
+            try:
+                seguimiento = session.get(CaSeguimiento, ca_id)
+                if seguimiento:
+                    seguimiento.es_oculta = ocultar
+                    # Al ocultar, quitamos favoritos/ofertada por lógica si estaba ahí, 
+                    # pero la orden dice "quitar de la pestaña candidatas".
+                    # Si está en candidatas, es porque NO es favorita ni ofertada.
+                else:
+                    # Creamos el registro solo para ocultarlo
+                    nuevo = CaSeguimiento(ca_id=ca_id, es_oculta=ocultar)
+                    session.add(nuevo)
+                session.commit()
+            except Exception as e: logger.error(f"Error ocultando {ca_id}: {e}"); session.rollback()
+    
+    def agregar_nota(self, ca_id: int, nota: str):
+        with self.session_factory() as session:
+            try:
+                seguimiento = session.get(CaSeguimiento, ca_id)
+                if seguimiento:
+                    seguimiento.notas = nota
+                else:
+                    # Crear registro si no existe (raro en este flujo, pero posible)
+                    nuevo = CaSeguimiento(ca_id=ca_id, notas=nota)
+                    session.add(nuevo)
+                session.commit()
+            except Exception as e: logger.error(f"Error nota {ca_id}: {e}"); session.rollback()
     
     def eliminar_ca_definitivamente(self, ca_id: int):
         with self.session_factory() as session:

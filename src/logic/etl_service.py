@@ -93,27 +93,33 @@ class EtlService:
             raise ScrapingFase1Error(f"Fallo scraping listado: {e}") from e
 
         if not datos:
-            emit_text("No se encontraron datos."); emit_percent(100); return
+            emit_text("No se encontraron datos."); emit_percent(100); return [] # Retorna lista vacía
 
         emit_percent(20); emit_text(f"Guardando {len(datos)} registros...")
+        
+        # --- CAMBIO: Capturar nuevos organismos ---
+        nuevos_organismos = []
         try:
-            self.db_service.insertar_o_actualizar_licitaciones_raw(datos)
+            nuevos_organismos = self.db_service.insertar_o_actualizar_licitaciones_raw(datos)
         except Exception as e:
             raise DatabaseLoadError(f"Fallo guardado BD: {e}") from e
+        # ------------------------------------------
             
         emit_percent(30); self._transform_puntajes_fase_1(emit_text, emit_percent)
         
+        # ... (Fase 2 automática igual que antes) ...
         try:
             candidatas = self.db_service.obtener_candidatas_para_fase_2(umbral_minimo=10)
             if candidatas:
                 emit_text(f"Iniciando Fase 2 para {len(candidatas)} CAs Top...")
                 self._procesar_lista_fase_2(candidatas, emit_text, emit_percent)
-            else:
-                 logger.info("No hay CAs nuevas con puntaje >= 10 para Fase 2 automática.")
         except Exception as e:
             logger.error(f"Error en Fase 2 automática: {e}") 
             
         emit_text("Proceso Completo."); emit_percent(100)
+        
+        # --- RETORNO: Devolvemos la lista para la GUI ---
+        return nuevos_organismos
 
     def run_recalculo_total_fase_1(self, progress_callback_text=None, progress_callback_percent=None):
         emit_text, emit_percent = self._create_progress_emitters(progress_callback_text, progress_callback_percent)

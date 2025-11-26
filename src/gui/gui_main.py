@@ -506,6 +506,47 @@ class MainWindow(FluentWindow, ThreadingMixin, MainSlotsMixin, DataLoaderMixin, 
             on_finished=self.on_auto_task_finished, 
             task_kwargs={"config": {"mode":"to_db", "date_from":y, "date_to":y, "max_paginas":0}}
         )
+    
+    
+    @Slot(dict)
+    def on_start_full_scraping(self, config: dict):
+        logger.info(f"Recibida configuración de scraping: {config}")
+        task_to_run = None
+        if config["mode"] == "to_db":
+            task_to_run = self.etl_service.run_etl_live_to_db
+        elif config["mode"] == "to_json":
+            task_to_run = self.etl_service.run_etl_live_to_db 
+            
+        if task_to_run is None: return
+        
+        # Callback personalizado para notificaciones
+        def on_etl_result(nuevos_organismos):
+            logger.info("Proceso ETL completo OK")
+            
+            # --- DEBUG PRINT ---
+            print(f"DEBUG: Organismos nuevos detectados: {len(nuevos_organismos) if nuevos_organismos else 0}")
+            if nuevos_organismos:
+                print(f"DEBUG: Lista: {nuevos_organismos}")
+            # -------------------
+
+            if nuevos_organismos and isinstance(nuevos_organismos, list) and len(nuevos_organismos) > 0:
+                msg = f"Se detectaron {len(nuevos_organismos)} nuevos organismos:\n\n"
+                msg += "\n".join(f"- {n}" for n in nuevos_organismos[:10])
+                if len(nuevos_organismos) > 10:
+                    msg += f"\n... y {len(nuevos_organismos)-10} más."
+                msg += "\n\nPuedes configurarlos en Herramientas > Config. Puntajes"
+                
+                QMessageBox.information(self, "Nuevos Organismos Detectados", msg)
+
+        self.start_task(
+            task=task_to_run,
+            on_result=on_etl_result, 
+            on_error=self.on_task_error,
+            on_finished=self.on_scraping_completed,
+            on_progress=self.on_progress_update,
+            on_progress_percent=self.on_progress_percent_update,
+            task_kwargs={"config": config}, 
+        )
 
     @Slot()
     def iniciar_limpieza_silenciosa(self): self.start_task(task=self.etl_service.run_limpieza_automatica, on_result=lambda: None)
